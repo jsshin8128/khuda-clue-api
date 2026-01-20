@@ -41,3 +41,10 @@ out/
 .env.local
 .env.*.local
 !.env.example
+
+### Documentation ###
+doc/schema.sql
+doc/API_SPEC.md
+doc/SRS.md
+doc/DEVELOPMENT_ROADMAP.md
+doc/test-flow.puml
