@@ -1,0 +1,15 @@
+-- V1: Create application table for CLUE system
+-- Status enum values: SUBMITTED, EXPERIENCE_SELECTED, QUESTIONS_SENT, ANSWERED, REVIEW_READY
+
+CREATE TABLE IF NOT EXISTS application (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    applicant_id VARCHAR(64) NOT NULL,
+    cover_letter_text LONGTEXT NOT NULL,
+    status ENUM('SUBMITTED','EXPERIENCE_SELECTED','QUESTIONS_SENT','ANSWERED','REVIEW_READY') NOT NULL DEFAULT 'SUBMITTED',
+    interview_recommendations_json JSON NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    PRIMARY KEY (id),
+    KEY idx_application_status_created_at (status, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
