@@ -49,6 +49,33 @@ dependencies {
 	testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
+sourceSets {
+	create("integrationTest") {
+		compileClasspath += sourceSets.main.get().output
+		runtimeClasspath += sourceSets.main.get().output
+	}
+}
+
+configurations {
+	"integrationTestImplementation" { extendsFrom(configurations.testImplementation.get()) }
+	"integrationTestRuntimeOnly" { extendsFrom(configurations.testRuntimeOnly.get()) }
+}
+
+tasks.register<Test>("integrationTest") {
+	description = "Runs integration tests."
+	group = "verification"
+
+	testClassesDirs = sourceSets["integrationTest"].output.classesDirs
+	classpath = sourceSets["integrationTest"].runtimeClasspath
+
+	useJUnitPlatform()
+
+	// 단위 테스트와 분리
+	shouldRunAfter(tasks.test)
+}
+
+tasks.check { dependsOn(tasks.named("integrationTest")) }
+
 tasks.withType<Test> {
 	useJUnitPlatform()
 }
