@@ -76,6 +76,11 @@ tasks.register<Test>("integrationTest") {
 
 tasks.check { dependsOn(tasks.named("integrationTest")) }
 
+tasks.named<Test>("test") {
+	useJUnitPlatform()
+	failOnNoDiscoveredTests = false
+}
+
 tasks.withType<Test> {
 	useJUnitPlatform()
 }
