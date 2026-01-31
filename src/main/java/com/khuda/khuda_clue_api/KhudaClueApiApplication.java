@@ -1,13 +1,13 @@
 package com.khuda.khuda_clue_api;
 
+import com.khuda.khuda_clue_api.config.ChatGptProperties;
 import io.github.cdimascio.dotenv.Dotenv;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
-
-import java.nio.file.Files;
-import java.nio.file.Paths;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 
 @SpringBootApplication
+@EnableConfigurationProperties(ChatGptProperties.class)
 public class KhudaClueApiApplication {
 
 	public static void main(String[] args) {
@@ -16,23 +16,11 @@ public class KhudaClueApiApplication {
 	}
 
 	private static void loadEnvFile() {
-		String envFilePath = ".env.local";
-		
-		// 로컬 환경: .env.local 파일이 있으면 사용
-		if (Files.exists(Paths.get(envFilePath))) {
-			Dotenv dotenv = Dotenv.configure()
-					.filename(".env.local")
-					.ignoreIfMissing()
-					.load();
-			setSystemProperties(dotenv);
-		} else {
-			// 배포 환경: .env 파일 사용
-			Dotenv dotenv = Dotenv.configure()
-					.filename(".env")
-					.ignoreIfMissing()
-					.load();
-			setSystemProperties(dotenv);
-		}
+		Dotenv dotenv = Dotenv.configure()
+				.filename(".env")
+				.ignoreIfMissing()
+				.load();
+		setSystemProperties(dotenv);
 	}
 
 	private static void setSystemProperties(Dotenv dotenv) {
