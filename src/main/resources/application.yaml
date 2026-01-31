@@ -26,3 +26,6 @@ management:
   endpoint:
     health:
       show-details: always
+chatgpt:
+  api:
+    key: ${CHATGPT_API_KEY:}

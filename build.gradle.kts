@@ -1,6 +1,6 @@
 plugins {
 	java
-	id("org.springframework.boot") version "4.0.1"
+	id("org.springframework.boot") version "4.0.2"
 	id("io.spring.dependency-management") version "1.1.7"
 }
 
@@ -24,6 +24,18 @@ repositories {
 	mavenCentral()
 }
 
+sourceSets {
+	create("integrationTest") {
+		compileClasspath += sourceSets.main.get().output
+		runtimeClasspath += sourceSets.main.get().output
+	}
+}
+
+configurations {
+	"integrationTestImplementation" { extendsFrom(configurations.testImplementation.get()) }
+	"integrationTestRuntimeOnly" { extendsFrom(configurations.testRuntimeOnly.get()) }
+}
+
 dependencies {
 	implementation("org.springframework.boot:spring-boot-starter-actuator")
 	implementation("org.springframework.boot:spring-boot-starter-data-jpa")
@@ -37,6 +49,8 @@ dependencies {
 	developmentOnly("org.springframework.boot:spring-boot-docker-compose")
 	runtimeOnly("com.mysql:mysql-connector-j")
 	annotationProcessor("org.projectlombok:lombok")
+	testImplementation("org.springframework.boot:spring-boot-starter-test")
+	testImplementation("org.mockito:mockito-core")
 	testImplementation("org.springframework.boot:spring-boot-starter-actuator-test")
 	testImplementation("org.springframework.boot:spring-boot-starter-data-jpa-test")
 	testImplementation("org.springframework.boot:spring-boot-starter-flyway-test")
@@ -47,18 +61,6 @@ dependencies {
 	testImplementation("org.testcontainers:testcontainers-junit-jupiter")
 	testImplementation("org.testcontainers:testcontainers-mysql")
 	testRuntimeOnly("org.junit.platform:junit-platform-launcher")
-}
-
-sourceSets {
-	create("integrationTest") {
-		compileClasspath += sourceSets.main.get().output
-		runtimeClasspath += sourceSets.main.get().output
-	}
-}
-
-configurations {
-	"integrationTestImplementation" { extendsFrom(configurations.testImplementation.get()) }
-	"integrationTestRuntimeOnly" { extendsFrom(configurations.testRuntimeOnly.get()) }
 }
 
 tasks.register<Test>("integrationTest") {
