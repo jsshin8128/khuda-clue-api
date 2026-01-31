@@ -12,10 +12,12 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
 
+import java.io.InputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -28,6 +30,7 @@ public class ChatGptService implements ExperienceExtractionService {
 
     private static final String GPT_MODEL = "gpt-4o-mini";
     private static final String API_URL = "https://api.openai.com/v1/chat/completions";
+    private static final String EXAMPLE_COVER_LETTER_RESOURCE_PATH = "/prompt/experience-extraction-example-coverletter.txt";
 
     private final ObjectMapper objectMapper;
     private final String apiKey;
@@ -52,11 +55,15 @@ public class ChatGptService implements ExperienceExtractionService {
         log.info("Extracting experiences using ChatGPT for applicationId: {}", applicationId);
 
         try {
-            String prompt = buildPrompt(coverLetterText);
+            String systemPrompt = buildSystemPrompt();
+            String userPrompt = buildPrompt(coverLetterText);
             ChatCompletionRequest request = new ChatCompletionRequest(
                     GPT_MODEL,
-                    List.of(new Message("user", prompt)),
-                    1.0,
+                    List.of(
+                            new Message("system", systemPrompt),
+                            new Message("user", userPrompt)
+                    ),
+                    0.2,
                     2000
             );
 
@@ -110,32 +117,136 @@ public class ChatGptService implements ExperienceExtractionService {
     }
 
     private String buildPrompt(String coverLetterText) {
+        String oneShotExample = buildOneShotExampleSection();
         return """
-            다음은 지원자의 자기소개서입니다. 이 자소서에서 '경험'을 의미적으로 발견하고, 각 경험이 STAR 기법(Situation-Task-Action-Result) 관점에서 얼마나 완성도가 높은지 평가해주세요.
+            [과제 설명]
+            너는 채용 평가 보조 AI다. 입력으로 주어지는 자기소개서 전체 텍스트에서 “검증 가치가 높은 경험” 구간을 의미적으로 찾아내고, 각 경험의 STAR 완성도(상황/과제/행동/결과), 구체성, 성과의 명확성을 종합해 점수를 매겨라.
             
-            자기소개서:
+            - 경험이란: 지원자가 직접 수행한 행동이 있고, 그로 인한 결과/성과(정량 또는 정성)가 드러나는 “연속 텍스트 구간”이다.
+            - 경험 경계는 문단/문장 기준이 아니라 의미 기준으로 잡아라. 단, 반드시 원문에서 연속된 substring이어야 한다.
+            - 인덱스 기준: 0-based 문자 인덱스이며, endIdx는 경험 구간의 마지막 문자 “다음” 위치(즉, Java String substring(startIdx, endIdx)로 정확히 잘라지는 범위)다.
+            - 출력은 반드시 JSON 배열 1개만. 코드펜스(```), 설명 문장, 마크다운, 주석을 절대 포함하지 마라.
+            
             %s
             
-            요구사항:
-            1. 자소서 전체 맥락에서 '경험의 경계'를 의미적으로 발견하세요. 단순 문장 분류가 아니라, 여러 요소가 섞인 텍스트에서 경험만 골라내세요.
-            2. 각 경험에 대해 Goal(목표)-Action(행동)-Result(결과)의 완성도를 종합적으로 평가하세요.
-            3. 각 경험을 다음 JSON 형식으로 반환하세요:
+            [과제]
+            아래 [입력 자소서]에서 경험을 최대 3개까지 찾아 JSON 배열로 반환하라.
+            - rankScore는 0.0~1.0
+            - rankScore 내림차순으로 정렬
+            - title은 원문에서 그대로 발췌한 짧은 구절(경험을 대표하는 문장/절)로 작성
+            - 아래 [출력 JSON 스키마]는 “형식 참고용”이다. 스키마 예시를 그대로 복사하지 말고, 반드시 실제 값으로 채워 출력해라.
             
+            [입력 자소서]
+            %s
+            
+            [출력 JSON 스키마]
             [
               {
-                "title": "경험의 제목 또는 요약 (자기소개서 원문에서 추출한 텍스트)",
-                "startIdx": 시작_인덱스_숫자,
-                "endIdx": 끝_인덱스_숫자,
-                "rankScore": 0.0부터_1.0까지의_점수
+                "title": "원문 발췌",
+                "startIdx": 0,
+                "endIdx": 0,
+                "rankScore": 0.0
               }
             ]
+            """.formatted(oneShotExample, coverLetterText);
+    }
+
+    private String buildSystemPrompt() {
+        return """
+            너는 JSON만 출력하는 정보 추출기다.
+            사용자의 입력 텍스트에서 경험 구간을 찾아내고, 지정된 스키마의 JSON 배열만 반환해라.
+            절대 설명을 붙이지 마라.
+            """;
+    }
+
+    private String buildOneShotExampleSection() {
+        String exampleCoverLetter = loadExampleCoverLetterFromResources();
+        if (exampleCoverLetter == null || exampleCoverLetter.isBlank()) {
+            return "";
+        }
+
+        ExampleExperience e1 = ExampleExperience.fromBoundaries(
+                "개인브랜드 운영 및 트렌드 분석",
+                exampleCoverLetter,
+                "1인 브랜드 운영자였던 만큼",
+                "극대화하겠습니다."
+        );
+        ExampleExperience e2 = ExampleExperience.fromBoundaries(
+                "콘텐츠팀 인턴 SNS 콘텐츠 제작",
+                exampleCoverLetter,
+                "콘텐츠팀 인턴으로 근무하며 신규 사업체의 SNS 콘텐츠를 제작했던 경험이 있습니다.",
+                "SNS 콘텐츠를 제작했습니다."
+        );
+        ExampleExperience e3 = ExampleExperience.fromBoundaries(
+                "브랜드 론칭 및 매출 신장",
+                exampleCoverLetter,
+                "인턴십 종료 후에는 직접 촬영한 사진을 기반으로 하는 브랜드 론칭에 도전했습니다.",
+                "매출을 신장할 수 있었습니다."
+        );
+
+        // 예시는 “형식 + 인덱스 기준”을 보여주기 위한 1-shot 이므로, 점수는 상대 비교로만 제시
+        return """
+            [예시 - 1 shot]
+            아래는 “입력 자소서 → 출력 JSON” 예시다. (형식/인덱스 기준을 그대로 따라라.)
             
-            주의사항:
-            - startIdx와 endIdx는 자소서 원문에서 해당 경험이 시작하고 끝나는 문자 위치입니다.
-            - rankScore는 STAR 완성도, 구체성, 성과의 명확성을 종합한 점수입니다 (0.0 ~ 1.0).
-            - 최대 3개의 경험만 반환하세요.
-            - JSON 형식만 반환하고, 다른 설명은 포함하지 마세요.
-            """.formatted(coverLetterText);
+            [예시 입력 자소서]
+            %s
+            
+            [예시 출력 JSON]
+            [
+              {
+                "title": "%s",
+                "startIdx": %d,
+                "endIdx": %d,
+                "rankScore": 0.65
+              },
+              {
+                "title": "%s",
+                "startIdx": %d,
+                "endIdx": %d,
+                "rankScore": 0.75
+              },
+              {
+                "title": "%s",
+                "startIdx": %d,
+                "endIdx": %d,
+                "rankScore": 0.85
+              }
+            ]
+            """.formatted(
+                exampleCoverLetter,
+                e1.title, e1.startIdx, e1.endIdx,
+                e2.title, e2.startIdx, e2.endIdx,
+                e3.title, e3.startIdx, e3.endIdx
+        );
+    }
+
+    private String loadExampleCoverLetterFromResources() {
+        try (InputStream is = ChatGptService.class.getResourceAsStream(EXAMPLE_COVER_LETTER_RESOURCE_PATH)) {
+            if (is == null) {
+                log.warn("One-shot example cover letter resource not found: {}", EXAMPLE_COVER_LETTER_RESOURCE_PATH);
+                return null;
+            }
+            return new String(is.readAllBytes(), StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            log.warn("Failed to load one-shot example cover letter from resources. path={}", EXAMPLE_COVER_LETTER_RESOURCE_PATH, e);
+            return null;
+        }
+    }
+
+    private record ExampleExperience(String title, int startIdx, int endIdx) {
+        static ExampleExperience fromBoundaries(String title, String fullText, String startAnchor, String endAnchor) {
+            int start = fullText.indexOf(startAnchor);
+            if (start < 0) {
+                throw new IllegalStateException("Example startAnchor not found: " + startAnchor);
+            }
+            int endAnchorIdx = fullText.indexOf(endAnchor, start);
+            if (endAnchorIdx < 0) {
+                throw new IllegalStateException("Example endAnchor not found after startAnchor: " + endAnchor);
+            }
+            int endExclusive = endAnchorIdx + endAnchor.length();
+            return new ExampleExperience(title, start, endExclusive);
+        }
     }
 
     private List<Experience> parseExperiences(Long applicationId, String coverLetterText, String content) {
