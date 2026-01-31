@@ -4,7 +4,7 @@
 CREATE TABLE IF NOT EXISTS experience (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     application_id BIGINT UNSIGNED NOT NULL,
-    title VARCHAR(255) NOT NULL,
+    title TEXT NOT NULL,
     start_idx INT NOT NULL,
     end_idx INT NOT NULL,
     rank_score DOUBLE NOT NULL DEFAULT 0,
