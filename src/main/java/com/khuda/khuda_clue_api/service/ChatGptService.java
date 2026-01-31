@@ -1,11 +1,14 @@
 package com.khuda.khuda_clue_api.service;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.khuda.khuda_clue_api.config.ChatGptProperties;
 import com.khuda.khuda_clue_api.entity.Experience;
+import lombok.AllArgsConstructor;
 import lombok.Data;
+import lombok.NoArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
 
@@ -30,16 +33,17 @@ public class ChatGptService implements ExperienceExtractionService {
     private final String apiKey;
     private final HttpClient httpClient;
 
-    public ChatGptService(ObjectMapper objectMapper,
-                         @Value("${chatgpt.api.key:${CHATGPT_API_KEY:}}") String apiKey) {
-        this.objectMapper = objectMapper;
-        this.apiKey = apiKey;
+    public ChatGptService(ChatGptProperties chatGptProperties) {
+        this.objectMapper = new ObjectMapper();
+        this.apiKey = chatGptProperties.getApiKey();
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(30))
                 .build();
         
         if (apiKey == null || apiKey.isEmpty()) {
-            log.warn("ChatGPT API key is not set. Please set CHATGPT_API_KEY environment variable or chatgpt.api.key property.");
+            log.error("ChatGPT API key is not set. Please set CHATGPT_API_KEY environment variable or chatgpt.api.key property.");
+        } else {
+            log.info("ChatGPT API key is configured. Key length: {}", apiKey.length());
         }
     }
 
@@ -66,8 +70,12 @@ public class ChatGptService implements ExperienceExtractionService {
                     .timeout(Duration.ofSeconds(60))
                     .build();
 
+            log.debug("Sending request to ChatGPT API. URL: {}, Model: {}", API_URL, GPT_MODEL);
             HttpResponse<String> httpResponse = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofString());
             String responseBody = httpResponse.body();
+
+            log.debug("ChatGPT API response status: {}, body length: {}", httpResponse.statusCode(), responseBody != null ? responseBody.length() : 0);
+            log.debug("ChatGPT API response body: {}", responseBody);
 
             if (httpResponse.statusCode() != 200) {
                 log.error("ChatGPT API returned error status: {}, body: {}", httpResponse.statusCode(), responseBody);
@@ -89,13 +97,14 @@ public class ChatGptService implements ExperienceExtractionService {
             // rankScore 내림차순 정렬
             experiences.sort(Comparator.comparing(Experience::getRankScore).reversed());
             
-            // 최대 3개만 반환
+            // 설계 의도: 검증에 가장 유리한 1개의 경험만 선택하여 반환
             return experiences.stream()
-                    .limit(3)
+                    .limit(1)
                     .toList();
 
         } catch (Exception e) {
-            log.error("Error during experience extraction with ChatGPT", e);
+            log.error("Error during experience extraction with ChatGPT. Exception type: {}, message: {}", 
+                    e.getClass().getSimpleName(), e.getMessage(), e);
             return new ArrayList<>();
         }
     }
@@ -197,22 +206,22 @@ public class ChatGptService implements ExperienceExtractionService {
     }
 
     @Data
+    @NoArgsConstructor
+    @AllArgsConstructor
+    @JsonIgnoreProperties(ignoreUnknown = true)
     private static class Message {
         private String role;
         private String content;
-
-        public Message(String role, String content) {
-            this.role = role;
-            this.content = content;
-        }
     }
 
     @Data
+    @JsonIgnoreProperties(ignoreUnknown = true)
     private static class ChatCompletionResponse {
         private List<Choice> choices;
     }
 
     @Data
+    @JsonIgnoreProperties(ignoreUnknown = true)
     private static class Choice {
         private Message message;
     }

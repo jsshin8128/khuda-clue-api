@@ -40,6 +40,13 @@ out/
 .env
 !.env.example
 
+### Logs ###
+logs/
+*.log
+
+### Test Scripts ###
+doc/local-test.sh
+
 ### Documentation ###
 doc/schema.sql
 doc/API_SPEC.md
