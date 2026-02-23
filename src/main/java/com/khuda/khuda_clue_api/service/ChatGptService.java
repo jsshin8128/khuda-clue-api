@@ -1,116 +1,80 @@
 package com.khuda.khuda_clue_api.service;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
-import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.khuda.khuda_clue_api.config.ChatGptProperties;
 import com.khuda.khuda_clue_api.entity.Experience;
-import lombok.AllArgsConstructor;
-import lombok.Data;
-import lombok.NoArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.http.MediaType;
+import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.messages.SystemMessage;
+import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.ai.chat.prompt.Prompt;
+import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Service;
 
 import java.io.InputStream;
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 
+/**
+ * Spring AI ChatClient를 사용하여 자소서에서 경험을 추출하는 서비스
+ */
 @Slf4j
 @Service
-@org.springframework.context.annotation.Primary
+@Primary
 public class ChatGptService implements ExperienceExtractionService {
 
-    private static final String GPT_MODEL = "gpt-4o-mini";
-    private static final String API_URL = "https://api.openai.com/v1/chat/completions";
     private static final String EXAMPLE_COVER_LETTER_RESOURCE_PATH = "/prompt/experience-extraction-example-coverletter.txt";
 
+    private final ChatClient chatClient;
     private final ObjectMapper objectMapper;
-    private final String apiKey;
-    private final HttpClient httpClient;
 
-    public ChatGptService(ChatGptProperties chatGptProperties) {
+    public ChatGptService(ChatClient.Builder chatClientBuilder) {
+        this.chatClient = chatClientBuilder.build();
         this.objectMapper = new ObjectMapper();
-        this.apiKey = chatGptProperties.getApiKey();
-        this.httpClient = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofSeconds(30))
-                .build();
-        
-        if (apiKey == null || apiKey.isEmpty()) {
-            log.error("ChatGPT API key is not set. Please set CHATGPT_API_KEY environment variable or chatgpt.api.key property.");
-        } else {
-            log.info("ChatGPT API key is configured. Key length: {}", apiKey.length());
-        }
+        log.info("ChatGptService initialized with Spring AI ChatClient.");
     }
 
     @Override
     public List<Experience> extractExperiences(Long applicationId, String coverLetterText) {
-        log.info("Extracting experiences using ChatGPT for applicationId: {}", applicationId);
+        log.info("Spring AI ChatClient를 사용하여 경험 추출 시작. applicationId: {}", applicationId);
 
         try {
             String systemPrompt = buildSystemPrompt();
             String userPrompt = buildPrompt(coverLetterText);
-            ChatCompletionRequest request = new ChatCompletionRequest(
-                    GPT_MODEL,
-                    List.of(
-                            new Message("system", systemPrompt),
-                            new Message("user", userPrompt)
-                    ),
-                    0.2,
-                    2000
-            );
 
-            String requestBody = objectMapper.writeValueAsString(request);
+            // Spring AI Prompt API 사용
+            Prompt prompt = new Prompt(List.of(
+                    new SystemMessage(systemPrompt),
+                    new UserMessage(userPrompt)
+            ));
 
-            HttpRequest httpRequest = HttpRequest.newBuilder()
-                    .uri(URI.create(API_URL))
-                    .header("Authorization", "Bearer " + apiKey)
-                    .header("Content-Type", MediaType.APPLICATION_JSON_VALUE)
-                    .POST(HttpRequest.BodyPublishers.ofString(requestBody))
-                    .timeout(Duration.ofSeconds(60))
-                    .build();
+            // ChatClient를 통한 AI 호출
+            String content = chatClient.prompt(prompt)
+                    .call()
+                    .content();
 
-            log.debug("Sending request to ChatGPT API. URL: {}, Model: {}", API_URL, GPT_MODEL);
-            HttpResponse<String> httpResponse = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofString());
-            String responseBody = httpResponse.body();
-
-            log.debug("ChatGPT API response status: {}, body length: {}", httpResponse.statusCode(), responseBody != null ? responseBody.length() : 0);
-            log.debug("ChatGPT API response body: {}", responseBody);
-
-            if (httpResponse.statusCode() != 200) {
-                log.error("ChatGPT API returned error status: {}, body: {}", httpResponse.statusCode(), responseBody);
+            if (content == null || content.isBlank()) {
+                log.warn("Spring AI로부터 빈 응답 수신. applicationId: {}", applicationId);
                 return new ArrayList<>();
             }
 
-            ChatCompletionResponse response = objectMapper.readValue(responseBody, ChatCompletionResponse.class);
-
-            if (response == null || response.choices == null || response.choices.isEmpty()) {
-                log.warn("No response from ChatGPT API");
-                return new ArrayList<>();
-            }
-
-            String content = response.choices.get(0).message.content;
-            log.info("ChatGPT response received: {}", content);
+            log.info("Spring AI 응답 수신 완료. applicationId: {}", applicationId);
+            log.debug("Spring AI 응답 내용: {}", content);
 
             List<Experience> experiences = parseExperiences(applicationId, coverLetterText, content);
-            
+
             // rankScore 내림차순 정렬
             experiences.sort(Comparator.comparing(Experience::getRankScore).reversed());
-            
+
             // 설계 의도: 검증에 가장 유리한 1개의 경험만 선택하여 반환
             return experiences.stream()
                     .limit(1)
                     .toList();
 
         } catch (Exception e) {
-            log.error("Error during experience extraction with ChatGPT. Exception type: {}, message: {}", 
+            log.error("Spring AI 경험 추출 중 오류 발생. Exception type: {}, message: {}",
                     e.getClass().getSimpleName(), e.getMessage(), e);
             return new ArrayList<>();
         }
@@ -120,11 +84,11 @@ public class ChatGptService implements ExperienceExtractionService {
         String oneShotExample = buildOneShotExampleSection();
         return """
             [과제 설명]
-            너는 채용 평가 보조 AI다. 입력으로 주어지는 자기소개서 전체 텍스트에서 “검증 가치가 높은 경험” 구간을 의미적으로 찾아내고, 각 경험의 STAR 완성도(상황/과제/행동/결과), 구체성, 성과의 명확성을 종합해 점수를 매겨라.
+            너는 채용 평가 보조 AI다. 입력으로 주어지는 자기소개서 전체 텍스트에서 "검증 가치가 높은 경험" 구간을 의미적으로 찾아내고, 각 경험의 STAR 완성도(상황/과제/행동/결과), 구체성, 성과의 명확성을 종합해 점수를 매겨라.
             
-            - 경험이란: 지원자가 직접 수행한 행동이 있고, 그로 인한 결과/성과(정량 또는 정성)가 드러나는 “연속 텍스트 구간”이다.
+            - 경험이란: 지원자가 직접 수행한 행동이 있고, 그로 인한 결과/성과(정량 또는 정성)가 드러나는 "연속 텍스트 구간"이다.
             - 경험 경계는 문단/문장 기준이 아니라 의미 기준으로 잡아라. 단, 반드시 원문에서 연속된 substring이어야 한다.
-            - 인덱스 기준: 0-based 문자 인덱스이며, endIdx는 경험 구간의 마지막 문자 “다음” 위치(즉, Java String substring(startIdx, endIdx)로 정확히 잘라지는 범위)다.
+            - 인덱스 기준: 0-based 문자 인덱스이며, endIdx는 경험 구간의 마지막 문자 "다음" 위치(즉, Java String substring(startIdx, endIdx)로 정확히 잘라지는 범위)다.
             - 출력은 반드시 JSON 배열 1개만. 코드펜스(```), 설명 문장, 마크다운, 주석을 절대 포함하지 마라.
             
             %s
@@ -134,7 +98,7 @@ public class ChatGptService implements ExperienceExtractionService {
             - rankScore는 0.0~1.0
             - rankScore 내림차순으로 정렬
             - title은 원문에서 그대로 발췌한 짧은 구절(경험을 대표하는 문장/절)로 작성
-            - 아래 [출력 JSON 스키마]는 “형식 참고용”이다. 스키마 예시를 그대로 복사하지 말고, 반드시 실제 값으로 채워 출력해라.
+            - 아래 [출력 JSON 스키마]는 "형식 참고용"이다. 스키마 예시를 그대로 복사하지 말고, 반드시 실제 값으로 채워 출력해라.
             
             [입력 자소서]
             %s
@@ -184,10 +148,10 @@ public class ChatGptService implements ExperienceExtractionService {
                 "매출을 신장할 수 있었습니다."
         );
 
-        // 예시는 “형식 + 인덱스 기준”을 보여주기 위한 1-shot 이므로, 점수는 상대 비교로만 제시
+        // 예시는 "형식 + 인덱스 기준"을 보여주기 위한 1-shot 이므로, 점수는 상대 비교로만 제시
         return """
             [예시 - 1 shot]
-            아래는 “입력 자소서 → 출력 JSON” 예시다. (형식/인덱스 기준을 그대로 따라라.)
+            아래는 "입력 자소서 → 출력 JSON" 예시다. (형식/인덱스 기준을 그대로 따라라.)
             
             [예시 입력 자소서]
             %s
@@ -224,12 +188,12 @@ public class ChatGptService implements ExperienceExtractionService {
     private String loadExampleCoverLetterFromResources() {
         try (InputStream is = ChatGptService.class.getResourceAsStream(EXAMPLE_COVER_LETTER_RESOURCE_PATH)) {
             if (is == null) {
-                log.warn("One-shot example cover letter resource not found: {}", EXAMPLE_COVER_LETTER_RESOURCE_PATH);
+                log.warn("One-shot 예시 자소서 리소스를 찾을 수 없습니다: {}", EXAMPLE_COVER_LETTER_RESOURCE_PATH);
                 return null;
             }
             return new String(is.readAllBytes(), StandardCharsets.UTF_8);
         } catch (Exception e) {
-            log.warn("Failed to load one-shot example cover letter from resources. path={}", EXAMPLE_COVER_LETTER_RESOURCE_PATH, e);
+            log.warn("One-shot 예시 자소서 로드 실패. path={}", EXAMPLE_COVER_LETTER_RESOURCE_PATH, e);
             return null;
         }
     }
@@ -276,7 +240,7 @@ public class ChatGptService implements ExperienceExtractionService {
                 // startIdx와 endIdx 검증 및 조정
                 int startIdx = Math.max(0, Math.min(expJson.startIdx, coverLetterText.length() - 1));
                 int endIdx = Math.max(startIdx + 1, Math.min(expJson.endIdx, coverLetterText.length()));
-                
+
                 // rankScore 검증
                 double rankScore = Math.max(0.0, Math.min(1.0, expJson.rankScore));
 
@@ -288,60 +252,23 @@ public class ChatGptService implements ExperienceExtractionService {
                         rankScore
                 );
                 experiences.add(experience);
-                log.info("Parsed experience: title={}, startIdx={}, endIdx={}, rankScore={}",
+                log.info("경험 파싱 완료: title={}, startIdx={}, endIdx={}, rankScore={}",
                         expJson.title, startIdx, endIdx, rankScore);
             }
 
         } catch (Exception e) {
-            log.error("Error parsing ChatGPT response. Parsing failed, returning empty list. Content: {}", content, e);
+            log.error("Spring AI 응답 파싱 중 오류 발생. 빈 리스트 반환. Content: {}", content, e);
             return new ArrayList<>();
         }
 
         return experiences;
     }
 
-    @Data
-    private static class ChatCompletionRequest {
-        private String model;
-        private List<Message> messages;
-        private double temperature;
-        @JsonProperty("max_tokens")
-        private int maxTokens;
-
-        public ChatCompletionRequest(String model, List<Message> messages, double temperature, int maxTokens) {
-            this.model = model;
-            this.messages = messages;
-            this.temperature = temperature;
-            this.maxTokens = maxTokens;
-        }
-    }
-
-    @Data
-    @NoArgsConstructor
-    @AllArgsConstructor
     @JsonIgnoreProperties(ignoreUnknown = true)
-    private static class Message {
-        private String role;
-        private String content;
-    }
-
-    @Data
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    private static class ChatCompletionResponse {
-        private List<Choice> choices;
-    }
-
-    @Data
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    private static class Choice {
-        private Message message;
-    }
-
-    @Data
     private static class ExperienceJson {
-        private String title;
-        private int startIdx;
-        private int endIdx;
-        private double rankScore;
+        public String title;
+        public int startIdx;
+        public int endIdx;
+        public double rankScore;
     }
 }

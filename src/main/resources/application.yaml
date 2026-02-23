@@ -18,6 +18,14 @@ spring:
         dialect: org.hibernate.dialect.MySQLDialect
   flyway:
     enabled: true
+  ai:
+    openai:
+      api-key: ${CHATGPT_API_KEY:}
+      chat:
+        options:
+          model: gpt-4o-mini
+          temperature: 0.2
+          max-tokens: 2000
 management:
   endpoints:
     web:
