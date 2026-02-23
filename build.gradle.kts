@@ -40,18 +40,6 @@ configurations {
 	"integrationTestRuntimeOnly" { extendsFrom(configurations.testRuntimeOnly.get()) }
 }
 
-sourceSets {
-	create("integrationTest") {
-		compileClasspath += sourceSets.main.get().output
-		runtimeClasspath += sourceSets.main.get().output
-	}
-}
-
-configurations {
-	"integrationTestImplementation" { extendsFrom(configurations.testImplementation.get()) }
-	"integrationTestRuntimeOnly" { extendsFrom(configurations.testRuntimeOnly.get()) }
-}
-
 dependencies {
 	// Spring AI BOM을 통한 버전 관리 (Spring Boot 4.x 호환 버전)
 	implementation(platform("org.springframework.ai:spring-ai-bom:2.0.0-M2"))
