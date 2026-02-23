@@ -22,6 +22,7 @@ configurations {
 
 repositories {
 	mavenCentral()
+	maven { url = uri("https://repo.spring.io/milestone") }
 }
 
 sourceSets {
@@ -37,6 +38,12 @@ configurations {
 }
 
 dependencies {
+	// Spring AI BOM을 통한 버전 관리 (Spring Boot 4.x 호환 버전)
+	implementation(platform("org.springframework.ai:spring-ai-bom:2.0.0-M2"))
+
+	// Spring AI OpenAI 스타터
+	implementation("org.springframework.ai:spring-ai-starter-model-openai")
+
 	implementation("org.springframework.boot:spring-boot-starter-actuator")
 	implementation("org.springframework.boot:spring-boot-starter-data-jpa")
 	implementation("org.springframework.boot:spring-boot-starter-flyway")

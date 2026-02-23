@@ -54,4 +54,6 @@ doc/SRS.md
 doc/DEVELOPMENT_ROADMAP.md
 doc/test-flow.puml
 doc/experience-extraction-sequence.puml
+doc/application-submission-sequence.puml
 doc/example-request.json
+doc/spring-ai-migration.md

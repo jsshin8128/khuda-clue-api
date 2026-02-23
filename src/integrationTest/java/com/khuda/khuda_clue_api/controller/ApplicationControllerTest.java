@@ -71,6 +71,9 @@ class ApplicationControllerTest {
         registry.add("spring.datasource.username", mysql::getUsername);
         registry.add("spring.datasource.password", mysql::getPassword);
         registry.add("spring.flyway.enabled", () -> "true");
+        // Spring AI auto-configuration이 API 키를 검증하므로 테스트용 플레이스홀더 설정
+        // (ExperienceExtractionService는 @MockitoBean으로 모킹되어 실제 API 호출은 발생하지 않음)
+        registry.add("spring.ai.openai.api-key", () -> "test-placeholder-not-used");
     }
 
     @Autowired
