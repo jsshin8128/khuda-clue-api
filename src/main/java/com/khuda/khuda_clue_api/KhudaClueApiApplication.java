@@ -1,10 +1,12 @@
 package com.khuda.khuda_clue_api;
 
+import com.khuda.khuda_clue_api.config.ChatGptProperties;
 import io.github.cdimascio.dotenv.Dotenv;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 @SpringBootApplication
+@EnableConfigurationProperties(ChatGptProperties.class)
 public class KhudaClueApiApplication {
 
 	public static void main(String[] args) {
