@@ -1,6 +1,7 @@
 package com.khuda.khuda_clue_api.controller;
 
 import com.khuda.khuda_clue_api.dto.request.SubmitRequest;
+import com.khuda.khuda_clue_api.dto.response.GenerateFollowupQuestionsResponse;
 import com.khuda.khuda_clue_api.dto.response.SelectExperienceResponse;
 import com.khuda.khuda_clue_api.dto.response.SubmitResponse;
 import com.khuda.khuda_clue_api.service.ApplicationService;
@@ -26,6 +27,12 @@ public class ApplicationController {
     @PostMapping("/{applicationId}/select-experience")
     public ResponseEntity<SelectExperienceResponse> selectExperience(@PathVariable Long applicationId) {
         SelectExperienceResponse response = applicationService.selectExperience(applicationId);
+        return ResponseEntity.ok(response);
+    }
+
+    @PostMapping("/{applicationId}/generate-followup-questions")
+    public ResponseEntity<GenerateFollowupQuestionsResponse> generateFollowupQuestions(@PathVariable Long applicationId) {
+        GenerateFollowupQuestionsResponse response = applicationService.generateFollowupQuestions(applicationId);
         return ResponseEntity.ok(response);
     }
 }

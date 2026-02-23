@@ -2,7 +2,9 @@ package com.khuda.khuda_clue_api.service;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.khuda.khuda_clue_api.domain.QuestionType;
 import com.khuda.khuda_clue_api.entity.Experience;
+import com.khuda.khuda_clue_api.entity.FollowupQuestion;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.messages.SystemMessage;
@@ -18,12 +20,12 @@ import java.util.Comparator;
 import java.util.List;
 
 /**
- * Spring AI ChatClient를 사용하여 자소서에서 경험을 추출하는 서비스
+ * Spring AI ChatClient를 사용하여 자소서에서 경험을 추출하고 STAR 질문을 생성하는 서비스
  */
 @Slf4j
 @Service
 @Primary
-public class ChatGptService implements ExperienceExtractionService {
+public class ChatGptService implements ExperienceExtractionService, FollowupQuestionGenerationService {
 
     private static final String EXAMPLE_COVER_LETTER_RESOURCE_PATH = "/prompt/experience-extraction-example-coverletter.txt";
 
@@ -36,13 +38,17 @@ public class ChatGptService implements ExperienceExtractionService {
         log.info("ChatGptService initialized with Spring AI ChatClient.");
     }
 
+    // =========================================================
+    // ExperienceExtractionService 구현
+    // =========================================================
+
     @Override
     public List<Experience> extractExperiences(Long applicationId, String coverLetterText) {
         log.info("Spring AI ChatClient를 사용하여 경험 추출 시작. applicationId: {}", applicationId);
 
         try {
-            String systemPrompt = buildSystemPrompt();
-            String userPrompt = buildPrompt(coverLetterText);
+            String systemPrompt = buildExperienceSystemPrompt();
+            String userPrompt = buildExperienceUserPrompt(coverLetterText);
 
             // Spring AI Prompt API 사용
             Prompt prompt = new Prompt(List.of(
@@ -80,7 +86,49 @@ public class ChatGptService implements ExperienceExtractionService {
         }
     }
 
-    private String buildPrompt(String coverLetterText) {
+    // =========================================================
+    // FollowupQuestionGenerationService 구현
+    // =========================================================
+
+    @Override
+    public List<FollowupQuestion> generateFollowupQuestions(Long experienceId, String experienceTitle, String coverLetterText) {
+        log.info("Spring AI ChatClient를 사용하여 STAR 질문 생성 시작. experienceId: {}", experienceId);
+
+        try {
+            String systemPrompt = buildQuestionSystemPrompt();
+            String userPrompt = buildQuestionUserPrompt(experienceTitle, coverLetterText);
+
+            Prompt prompt = new Prompt(List.of(
+                    new SystemMessage(systemPrompt),
+                    new UserMessage(userPrompt)
+            ));
+
+            String content = chatClient.prompt(prompt)
+                    .call()
+                    .content();
+
+            if (content == null || content.isBlank()) {
+                log.warn("Spring AI로부터 빈 응답 수신 (STAR 질문 생성). experienceId: {}", experienceId);
+                return new ArrayList<>();
+            }
+
+            log.info("Spring AI STAR 질문 응답 수신 완료. experienceId: {}", experienceId);
+            log.debug("Spring AI STAR 질문 응답: {}", content);
+
+            return parseFollowupQuestions(experienceId, content);
+
+        } catch (Exception e) {
+            log.error("Spring AI STAR 질문 생성 중 오류 발생. Exception type: {}, message: {}",
+                    e.getClass().getSimpleName(), e.getMessage(), e);
+            return new ArrayList<>();
+        }
+    }
+
+    // =========================================================
+    // 경험 추출 관련 private 메서드
+    // =========================================================
+
+    private String buildExperienceUserPrompt(String coverLetterText) {
         String oneShotExample = buildOneShotExampleSection();
         return """
             [과제 설명]
@@ -115,7 +163,7 @@ public class ChatGptService implements ExperienceExtractionService {
             """.formatted(oneShotExample, coverLetterText);
     }
 
-    private String buildSystemPrompt() {
+    private String buildExperienceSystemPrompt() {
         return """
             너는 JSON만 출력하는 정보 추출기다.
             사용자의 입력 텍스트에서 경험 구간을 찾아내고, 지정된 스키마의 JSON 배열만 반환해라.
@@ -270,5 +318,93 @@ public class ChatGptService implements ExperienceExtractionService {
         public int startIdx;
         public int endIdx;
         public double rankScore;
+    }
+
+    // =========================================================
+    // STAR 질문 생성 관련 private 메서드
+    // =========================================================
+
+    private String buildQuestionSystemPrompt() {
+        return """
+            너는 JSON만 출력하는 채용 면접 질문 생성기다.
+            입력으로 주어진 경험 제목과 자소서 원문을 바탕으로, STAR 프레임워크의 각 단계(S/T/A/R)별 후속 질문 1개씩, 총 4개를 생성해라.
+            출력은 반드시 JSON 배열 1개만. 코드펜스(```), 설명 문장, 마크다운, 주석을 절대 포함하지 마라.
+            """;
+    }
+
+    private String buildQuestionUserPrompt(String experienceTitle, String coverLetterText) {
+        return """
+            [과제]
+            아래 [선택된 경험]과 [자소서 원문]을 기반으로 STAR 후속 질문 4개를 생성하라.
+            
+            각 질문의 목적:
+            - S (Situation): 경험의 구체적 맥락과 배경을 파악한다. (시간, 장소, 역할, 팀 규모 등)
+            - T (Task): 지원자가 달성하려 했던 과제와 성공 기준을 파악한다.
+            - A (Action): 지원자가 직접 수행한 구체적인 행동 단계를 파악한다.
+            - R (Result): 행동의 결과와 전후 변화를 검증 가능한 형태로 파악한다.
+            
+            규칙:
+            - 질문은 짧고 구체적으로 작성한다 (1문장)
+            - AI가 지어낸 경험이 아닌지 검증 가능한 방향으로 질문한다
+            - 아래 [출력 JSON 스키마]는 "형식 참고용"이다. 스키마 예시를 그대로 복사하지 말고, 실제 경험에 맞는 질문을 생성해라.
+            
+            [선택된 경험]
+            %s
+            
+            [자소서 원문]
+            %s
+            
+            [출력 JSON 스키마]
+            [
+              {"type": "S", "questionText": "S 질문"},
+              {"type": "T", "questionText": "T 질문"},
+              {"type": "A", "questionText": "A 질문"},
+              {"type": "R", "questionText": "R 질문"}
+            ]
+            """.formatted(experienceTitle, coverLetterText);
+    }
+
+    private List<FollowupQuestion> parseFollowupQuestions(Long experienceId, String content) {
+        List<FollowupQuestion> questions = new ArrayList<>();
+
+        try {
+            // JSON 배열 추출 (마크다운 코드 블록 제거)
+            String jsonContent = content.trim();
+            if (jsonContent.startsWith("```json")) {
+                jsonContent = jsonContent.substring(7);
+            }
+            if (jsonContent.startsWith("```")) {
+                jsonContent = jsonContent.substring(3);
+            }
+            if (jsonContent.endsWith("```")) {
+                jsonContent = jsonContent.substring(0, jsonContent.length() - 3);
+            }
+            jsonContent = jsonContent.trim();
+
+            // JSON 파싱
+            List<FollowupQuestionJson> questionJsons = objectMapper.readValue(
+                    jsonContent,
+                    objectMapper.getTypeFactory().constructCollectionType(List.class, FollowupQuestionJson.class)
+            );
+
+            for (FollowupQuestionJson qJson : questionJsons) {
+                QuestionType questionType = QuestionType.valueOf(qJson.type.trim().toUpperCase());
+                FollowupQuestion question = new FollowupQuestion(experienceId, questionType, qJson.questionText);
+                questions.add(question);
+                log.info("STAR 질문 파싱 완료: type={}, questionText={}", questionType, qJson.questionText);
+            }
+
+        } catch (Exception e) {
+            log.error("Spring AI STAR 질문 응답 파싱 중 오류 발생. 빈 리스트 반환. Content: {}", content, e);
+            return new ArrayList<>();
+        }
+
+        return questions;
+    }
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    private static class FollowupQuestionJson {
+        public String type;
+        public String questionText;
     }
 }
