@@ -25,10 +25,13 @@ repositories {
 	maven { url = uri("https://repo.spring.io/milestone") }
 }
 
-sourceSets {
-	create("integrationTest") {
-		compileClasspath += sourceSets.main.get().output
-		runtimeClasspath += sourceSets.main.get().output
+// integrationTest SourceSet이 아직 생성되지 않았을 때만 생성
+if (!sourceSets.names.contains("integrationTest")) {
+	sourceSets {
+		create("integrationTest") {
+			compileClasspath += sourceSets.main.get().output
+			runtimeClasspath += sourceSets.main.get().output
+		}
 	}
 }
 
