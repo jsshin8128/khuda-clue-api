@@ -4,17 +4,23 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.khuda.khuda_clue_api.domain.ApplicationStatus;
 import com.khuda.khuda_clue_api.domain.QuestionType;
+import com.khuda.khuda_clue_api.dto.request.AnswerItem;
+import com.khuda.khuda_clue_api.dto.request.FollowupAnswersRequest;
 import com.khuda.khuda_clue_api.dto.request.SubmitRequest;
+import com.khuda.khuda_clue_api.dto.response.FollowupAnswersResponse;
 import com.khuda.khuda_clue_api.dto.response.GenerateFollowupQuestionsResponse;
 import com.khuda.khuda_clue_api.dto.response.SelectExperienceResponse;
 import com.khuda.khuda_clue_api.dto.response.SubmitResponse;
 import com.khuda.khuda_clue_api.entity.Experience;
+import com.khuda.khuda_clue_api.entity.FollowupAnswer;
 import com.khuda.khuda_clue_api.entity.FollowupQuestion;
 import com.khuda.khuda_clue_api.repository.ApplicationRepository;
 import com.khuda.khuda_clue_api.repository.ExperienceRepository;
+import com.khuda.khuda_clue_api.repository.FollowupAnswerRepository;
 import com.khuda.khuda_clue_api.repository.FollowupQuestionRepository;
 import com.khuda.khuda_clue_api.service.ExperienceExtractionService;
 import com.khuda.khuda_clue_api.service.FollowupQuestionGenerationService;
+import com.khuda.khuda_clue_api.service.InterviewRecommendationService;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -35,6 +41,7 @@ import org.testcontainers.utility.DockerImageName;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.time.LocalDateTime;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -93,11 +100,17 @@ class ApplicationControllerTest {
     @Autowired
     private FollowupQuestionRepository followupQuestionRepository;
 
+    @Autowired
+    private FollowupAnswerRepository followupAnswerRepository;
+
     @MockitoBean
     private ExperienceExtractionService experienceExtractionService;
 
     @MockitoBean
     private FollowupQuestionGenerationService followupQuestionGenerationService;
+
+    @MockitoBean
+    private InterviewRecommendationService interviewRecommendationService;
 
     private final ObjectMapper objectMapper = new ObjectMapper().registerModule(new JavaTimeModule());
 
@@ -458,6 +471,242 @@ class ApplicationControllerTest {
         // When & Then - 두 번째 질문 생성 시도 (QUESTIONS_SENT 상태에서 409 에러 예상)
         mockMvc.perform(post("/api/v1/applications/{applicationId}/generate-followup-questions", applicationId)
                         .contentType(MediaType.APPLICATION_JSON))
+                .andExpect(status().isConflict());
+    }
+
+    // =========================================================
+    // PR4: STAR 답변 제출 + 면접 추천 질문 생성 테스트
+    // =========================================================
+
+    /**
+     * 지원서 제출 → 경험 선택 → 질문 생성까지 수행하고 (applicationId, questionIds) 를 반환하는 헬퍼
+     */
+    private record AppWithQuestions(long applicationId, List<Long> questionIds) {}
+
+    private AppWithQuestions submitSelectAndGenerateQuestions() throws Exception {
+        // 지원서 제출
+        SubmitRequest submitRequest = loadExampleRequest();
+        MvcResult submitResult = mockMvc.perform(post("/api/v1/applications")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(submitRequest)))
+                .andExpect(status().isCreated())
+                .andReturn();
+        SubmitResponse submitResponse = objectMapper.readValue(
+                submitResult.getResponse().getContentAsString(), SubmitResponse.class);
+        Long applicationId = submitResponse.applicationId();
+
+        // Mock 경험 추출
+        var mockExperiences = List.of(
+                Experience.createCandidate(applicationId, "브랜드 론칭 및 매출 신장", 946, 1290, 0.85)
+        );
+        Mockito.when(experienceExtractionService.extractExperiences(Mockito.eq(applicationId), Mockito.anyString()))
+                .thenReturn(mockExperiences);
+
+        // 경험 선택
+        MvcResult selectResult = mockMvc.perform(post("/api/v1/applications/{applicationId}/select-experience", applicationId)
+                        .contentType(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andReturn();
+        SelectExperienceResponse selectResponse = objectMapper.readValue(
+                selectResult.getResponse().getContentAsString(), SelectExperienceResponse.class);
+        long experienceId = selectResponse.selectedExperience().experienceId();
+
+        // Mock 질문 생성
+        var mockQuestions = List.of(
+                new FollowupQuestion(experienceId, QuestionType.S, "당시 팀 규모와 본인 역할을 구체적으로 적어주세요."),
+                new FollowupQuestion(experienceId, QuestionType.T, "해결하려던 문제와 성공 기준을 1개로 적어주세요."),
+                new FollowupQuestion(experienceId, QuestionType.A, "본인이 수행한 행동을 3단계로 적어주세요."),
+                new FollowupQuestion(experienceId, QuestionType.R, "결과(전후 변화)와 근거 위치를 적어주세요.")
+        );
+        Mockito.when(followupQuestionGenerationService.generateFollowupQuestions(
+                        Mockito.eq(experienceId), Mockito.anyString(), Mockito.anyString()))
+                .thenReturn(mockQuestions);
+
+        // 질문 생성
+        MvcResult questionsResult = mockMvc.perform(post("/api/v1/applications/{applicationId}/generate-followup-questions", applicationId)
+                        .contentType(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andReturn();
+        GenerateFollowupQuestionsResponse questionsResponse = objectMapper.readValue(
+                questionsResult.getResponse().getContentAsString(), GenerateFollowupQuestionsResponse.class);
+
+        List<Long> questionIds = questionsResponse.questions().stream()
+                .map(q -> q.questionId())
+                .toList();
+
+        return new AppWithQuestions(applicationId, questionIds);
+    }
+
+    @Test
+    @DisplayName("답변 제출 API가 정상적으로 작동한다 - 답변 저장 + 추천 JSON + status=REVIEW_READY")
+    void submitFollowupAnswers_shouldReturn200WithReviewReady() throws Exception {
+        // Given - 지원서 제출 → 경험 선택 → 질문 생성 완료
+        AppWithQuestions setup = submitSelectAndGenerateQuestions();
+        long applicationId = setup.applicationId();
+        List<Long> questionIds = setup.questionIds();
+
+        // Mock 면접 추천 질문 생성 응답
+        var mockRecommendations = List.of(
+                "성과 측정에 사용한 운영 로그 문서는 어떤 형태였고, 어떤 기준으로 집계했나요?",
+                "요구사항 정리 단계에서 가장 중요하게 반영한 제약 조건은 무엇이었나요?",
+                "DB 설계에서 가장 고민했던 테이블/인덱스 설계 선택과 그 이유를 설명해 주세요."
+        );
+        Mockito.when(interviewRecommendationService.generateInterviewRecommendations(
+                        Mockito.eq(applicationId),
+                        Mockito.anyString(),
+                        Mockito.anyList(),
+                        Mockito.anyList()))
+                .thenReturn(mockRecommendations);
+
+        // 답변 요청 생성 (4개 질문에 대한 답변)
+        var answers = List.of(
+                new AnswerItem(questionIds.get(0), "5명 팀에서 백엔드/DB 설계를 담당했습니다."),
+                new AnswerItem(questionIds.get(1), "지원서 처리 시간을 30% 줄이는 것이 목표였습니다."),
+                new AnswerItem(questionIds.get(2), "요구사항 정리→DB 설계→API 구현 순으로 진행했습니다."),
+                new AnswerItem(questionIds.get(3), "처리 시간 10분→7분, 근거: 운영 로그 문서")
+        );
+        FollowupAnswersRequest request = new FollowupAnswersRequest(
+                LocalDateTime.of(2026, 1, 19, 12, 10, 0),
+                LocalDateTime.of(2026, 1, 19, 12, 16, 0),
+                answers
+        );
+
+        // When - 답변 제출 API 호출
+        MvcResult result = mockMvc.perform(post("/api/v1/applications/{applicationId}/followup-answers", applicationId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.applicationId").value(applicationId))
+                .andExpect(jsonPath("$.status").value("REVIEW_READY"))
+                .andExpect(jsonPath("$.message").exists())
+                .andReturn();
+
+        // Then - 응답 검증
+        String responseBody = result.getResponse().getContentAsString();
+        FollowupAnswersResponse response = objectMapper.readValue(responseBody, FollowupAnswersResponse.class);
+
+        assertThat(response.applicationId()).isEqualTo(applicationId);
+        assertThat(response.status()).isEqualTo(ApplicationStatus.REVIEW_READY);
+        assertThat(response.message()).isEqualTo("Answers saved. Review package is ready.");
+
+        // DB 검증: followup_answer 4개 저장 확인
+        List<FollowupAnswer> savedAnswers = followupAnswerRepository.findByQuestionIdIn(questionIds);
+        assertThat(savedAnswers).hasSize(4);
+
+        // DB 검증: 각 답변의 answerText 확인
+        var answerTexts = savedAnswers.stream().map(FollowupAnswer::getAnswerText).toList();
+        assertThat(answerTexts).containsExactlyInAnyOrder(
+                "5명 팀에서 백엔드/DB 설계를 담당했습니다.",
+                "지원서 처리 시간을 30% 줄이는 것이 목표였습니다.",
+                "요구사항 정리→DB 설계→API 구현 순으로 진행했습니다.",
+                "처리 시간 10분→7분, 근거: 운영 로그 문서"
+        );
+
+        // DB 검증: interview_recommendations_json 저장 확인
+        var application = applicationRepository.findById(applicationId).orElseThrow();
+        assertThat(application.getStatus()).isEqualTo(ApplicationStatus.REVIEW_READY);
+        assertThat(application.getInterviewRecommendationsJson()).isNotNull();
+        assertThat(application.getInterviewRecommendationsJson()).contains("운영 로그 문서");
+    }
+
+    @Test
+    @DisplayName("QUESTIONS_SENT 상태가 아닌 지원서에서 답변 제출 시 409 에러를 반환한다")
+    void submitFollowupAnswers_withWrongStatus_shouldReturn409() throws Exception {
+        // Given - 지원서 제출만 완료 (SUBMITTED 상태)
+        SubmitRequest submitRequest = loadExampleRequest();
+        MvcResult submitResult = mockMvc.perform(post("/api/v1/applications")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(submitRequest)))
+                .andExpect(status().isCreated())
+                .andReturn();
+        SubmitResponse submitResponse = objectMapper.readValue(
+                submitResult.getResponse().getContentAsString(), SubmitResponse.class);
+        Long applicationId = submitResponse.applicationId();
+
+        // 답변 요청 생성
+        var answers = List.of(new AnswerItem(1L, "답변 텍스트"));
+        FollowupAnswersRequest request = new FollowupAnswersRequest(
+                LocalDateTime.now().minusMinutes(10),
+                LocalDateTime.now(),
+                answers
+        );
+
+        // When & Then - SUBMITTED 상태에서 답변 제출 시도 (409 에러 예상)
+        mockMvc.perform(post("/api/v1/applications/{applicationId}/followup-answers", applicationId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isConflict());
+    }
+
+    @Test
+    @DisplayName("존재하지 않는 지원서 ID로 답변 제출 시 404 에러를 반환한다")
+    void submitFollowupAnswers_withNonExistentApplication_shouldReturn404() throws Exception {
+        // Given
+        var answers = List.of(new AnswerItem(1L, "답변 텍스트"));
+        FollowupAnswersRequest request = new FollowupAnswersRequest(
+                LocalDateTime.now().minusMinutes(10),
+                LocalDateTime.now(),
+                answers
+        );
+
+        // When & Then
+        mockMvc.perform(post("/api/v1/applications/{applicationId}/followup-answers", 99999L)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    @DisplayName("answers 필드가 비어있으면 400 에러를 반환한다")
+    void submitFollowupAnswers_withEmptyAnswers_shouldReturn400() throws Exception {
+        // Given
+        FollowupAnswersRequest request = new FollowupAnswersRequest(
+                LocalDateTime.now().minusMinutes(10),
+                LocalDateTime.now(),
+                List.of()
+        );
+
+        // When & Then
+        mockMvc.perform(post("/api/v1/applications/{applicationId}/followup-answers", 1L)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    @DisplayName("REVIEW_READY 상태에서 다시 답변 제출 시 409 에러를 반환한다")
+    void submitFollowupAnswers_whenAlreadyReviewReady_shouldReturn409() throws Exception {
+        // Given - 전체 플로우 완료 (REVIEW_READY 상태)
+        AppWithQuestions setup = submitSelectAndGenerateQuestions();
+        long applicationId = setup.applicationId();
+        List<Long> questionIds = setup.questionIds();
+
+        Mockito.when(interviewRecommendationService.generateInterviewRecommendations(
+                        Mockito.eq(applicationId), Mockito.anyString(), Mockito.anyList(), Mockito.anyList()))
+                .thenReturn(List.of("추천 질문 1", "추천 질문 2", "추천 질문 3"));
+
+        var answers = List.of(
+                new AnswerItem(questionIds.get(0), "답변 S"),
+                new AnswerItem(questionIds.get(1), "답변 T"),
+                new AnswerItem(questionIds.get(2), "답변 A"),
+                new AnswerItem(questionIds.get(3), "답변 R")
+        );
+        FollowupAnswersRequest request = new FollowupAnswersRequest(
+                LocalDateTime.now().minusMinutes(10),
+                LocalDateTime.now(),
+                answers
+        );
+
+        // 첫 번째 제출 (성공)
+        mockMvc.perform(post("/api/v1/applications/{applicationId}/followup-answers", applicationId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk());
+
+        // When & Then - 두 번째 제출 시도 (REVIEW_READY 상태에서 409 에러 예상)
+        mockMvc.perform(post("/api/v1/applications/{applicationId}/followup-answers", applicationId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isConflict());
     }
 }

@@ -1,7 +1,13 @@
 package com.khuda.khuda_clue_api.service;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.khuda.khuda_clue_api.domain.ApplicationStatus;
+import com.khuda.khuda_clue_api.dto.request.AnswerItem;
+import com.khuda.khuda_clue_api.dto.request.FollowupAnswersRequest;
 import com.khuda.khuda_clue_api.dto.request.SubmitRequest;
+import com.khuda.khuda_clue_api.dto.response.FollowupAnswersResponse;
 import com.khuda.khuda_clue_api.dto.response.GenerateFollowupQuestionsResponse;
 import com.khuda.khuda_clue_api.dto.response.QuestionDto;
 import com.khuda.khuda_clue_api.dto.response.SelectExperienceResponse;
@@ -9,9 +15,11 @@ import com.khuda.khuda_clue_api.dto.response.SelectedExperience;
 import com.khuda.khuda_clue_api.dto.response.SubmitResponse;
 import com.khuda.khuda_clue_api.entity.Application;
 import com.khuda.khuda_clue_api.entity.Experience;
+import com.khuda.khuda_clue_api.entity.FollowupAnswer;
 import com.khuda.khuda_clue_api.entity.FollowupQuestion;
 import com.khuda.khuda_clue_api.repository.ApplicationRepository;
 import com.khuda.khuda_clue_api.repository.ExperienceRepository;
+import com.khuda.khuda_clue_api.repository.FollowupAnswerRepository;
 import com.khuda.khuda_clue_api.repository.FollowupQuestionRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
@@ -29,8 +37,13 @@ public class ApplicationService {
     private final ApplicationRepository applicationRepository;
     private final ExperienceRepository experienceRepository;
     private final FollowupQuestionRepository followupQuestionRepository;
+    private final FollowupAnswerRepository followupAnswerRepository;
     private final ExperienceExtractionService experienceExtractionService;
     private final FollowupQuestionGenerationService followupQuestionGenerationService;
+    private final InterviewRecommendationService interviewRecommendationService;
+
+    // ObjectMapper는 ChatGptService와 동일하게 직접 생성 (Spring 빈 등록 없이 사용)
+    private final ObjectMapper objectMapper = new ObjectMapper().registerModule(new JavaTimeModule());
 
     @Transactional
     public SubmitResponse createApplication(SubmitRequest request) {
@@ -137,6 +150,83 @@ public class ApplicationService {
                 ApplicationStatus.QUESTIONS_SENT,
                 selectedExperience.getId(),
                 questionDtos
+        );
+    }
+
+    @Transactional
+    public FollowupAnswersResponse submitFollowupAnswers(Long applicationId, FollowupAnswersRequest request) {
+        // 상태 가드: QUESTIONS_SENT 상태만 허용
+        Application application = applicationRepository.findById(applicationId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Application not found"));
+
+        if (application.getStatus() != ApplicationStatus.QUESTIONS_SENT) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "Answer submission is only allowed for QUESTIONS_SENT applications. Current status: "
+                            + application.getStatus());
+        }
+
+        // 선택된 경험 조회
+        Experience selectedExperience = experienceRepository
+                .findByApplicationIdAndIsSelectedTrue(applicationId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR,
+                        "No selected experience found for applicationId: " + applicationId));
+
+        // 해당 경험의 질문 목록 조회
+        List<FollowupQuestion> questions = followupQuestionRepository
+                .findByExperienceIdOrderByTypeAsc(selectedExperience.getId());
+
+        if (questions.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR,
+                    "No followup questions found for experienceId: " + selectedExperience.getId());
+        }
+
+        // 답변 저장 (질문당 1개)
+        List<FollowupAnswer> answers = request.answers().stream()
+                .map((AnswerItem item) -> new FollowupAnswer(
+                        item.questionId(),
+                        item.answerText(),
+                        request.startedAt(),
+                        request.submittedAt()
+                ))
+                .toList();
+        List<FollowupAnswer> savedAnswers = followupAnswerRepository.saveAll(answers);
+
+        // 상태 업데이트: QUESTIONS_SENT → ANSWERED
+        application.updateStatus(ApplicationStatus.ANSWERED);
+        applicationRepository.save(application);
+
+        // 면접 추천 질문 생성 (내부 로직)
+        List<String> recommendations = interviewRecommendationService.generateInterviewRecommendations(
+                applicationId,
+                application.getCoverLetterText(),
+                questions,
+                savedAnswers
+        );
+
+        if (recommendations.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR,
+                    "Failed to generate interview recommendations for applicationId: " + applicationId);
+        }
+
+        // 추천 질문 JSON으로 직렬화 후 저장
+        String recommendationsJson;
+        try {
+            recommendationsJson = objectMapper.writeValueAsString(recommendations);
+        } catch (JsonProcessingException e) {
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR,
+                    "Failed to serialize interview recommendations: " + e.getMessage());
+        }
+
+        application.updateInterviewRecommendations(recommendationsJson);
+
+        // 상태 업데이트: ANSWERED → REVIEW_READY
+        application.updateStatus(ApplicationStatus.REVIEW_READY);
+        applicationRepository.save(application);
+
+        return new FollowupAnswersResponse(
+                applicationId,
+                ApplicationStatus.REVIEW_READY,
+                "Answers saved. Review package is ready."
         );
     }
 }
