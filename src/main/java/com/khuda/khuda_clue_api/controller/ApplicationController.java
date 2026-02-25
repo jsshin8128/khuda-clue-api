@@ -6,6 +6,7 @@ import com.khuda.khuda_clue_api.dto.request.SubmitRequest;
 import com.khuda.khuda_clue_api.dto.response.ApplicationListResponse;
 import com.khuda.khuda_clue_api.dto.response.FollowupAnswersResponse;
 import com.khuda.khuda_clue_api.dto.response.GenerateFollowupQuestionsResponse;
+import com.khuda.khuda_clue_api.dto.response.ReviewDetailResponse;
 import com.khuda.khuda_clue_api.dto.response.SelectExperienceResponse;
 import com.khuda.khuda_clue_api.dto.response.SubmitResponse;
 import com.khuda.khuda_clue_api.service.ApplicationService;
@@ -60,6 +61,16 @@ public class ApplicationController {
             @Valid @RequestBody FollowupAnswersRequest request
     ) {
         FollowupAnswersResponse response = applicationService.submitFollowupAnswers(applicationId, request);
+        return ResponseEntity.ok(response);
+    }
+
+    /**
+     * 평가자 결과 조회 (한 화면 완성 패키지)
+     * GET /api/v1/applications/{applicationId}/review
+     */
+    @GetMapping("/{applicationId}/review")
+    public ResponseEntity<ReviewDetailResponse> getReviewDetail(@PathVariable Long applicationId) {
+        ReviewDetailResponse response = applicationService.getReviewDetail(applicationId);
         return ResponseEntity.ok(response);
     }
 }

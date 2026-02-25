@@ -45,6 +45,7 @@ import java.time.LocalDateTime;
 import java.util.List;
 
 import com.khuda.khuda_clue_api.dto.response.ApplicationListResponse;
+import com.khuda.khuda_clue_api.dto.response.ReviewDetailResponse;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
@@ -908,5 +909,85 @@ class ApplicationControllerTest {
                         .param("status", "REVIEW_READY")
                         .param("limit", "101"))
                 .andExpect(status().isBadRequest());
+    }
+
+    // =========================================================
+    // PR6: 평가자 결과 조회 (한 화면 완성) 테스트
+    // =========================================================
+
+    @Test
+    @DisplayName("평가자 결과 조회 API가 정상적으로 작동한다 - 패키지 형태 응답 검증")
+    void getReviewDetail_shouldReturn200WithFullPackage() throws Exception {
+        // Given - 전체 플로우 완료 (REVIEW_READY 상태)
+        long applicationId = createReviewReadyApplication();
+
+        // When & Then - 응답 필드 검증
+        MvcResult result = mockMvc.perform(get("/api/v1/applications/{applicationId}/review", applicationId))
+                .andExpect(status().isOk())
+                .andExpect(content().contentType(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("$.applicationId").value(applicationId))
+                .andExpect(jsonPath("$.applicantId").exists())
+                .andExpect(jsonPath("$.status").value("REVIEW_READY"))
+                .andExpect(jsonPath("$.coverLetterText").exists())
+                .andExpect(jsonPath("$.selectedExperience").exists())
+                .andExpect(jsonPath("$.selectedExperience.experienceId").exists())
+                .andExpect(jsonPath("$.selectedExperience.title").exists())
+                .andExpect(jsonPath("$.selectedExperience.startIdx").exists())
+                .andExpect(jsonPath("$.selectedExperience.endIdx").exists())
+                .andExpect(jsonPath("$.followup").isArray())
+                .andExpect(jsonPath("$.followup.length()").value(4))
+                .andExpect(jsonPath("$.followup[0].type").exists())
+                .andExpect(jsonPath("$.followup[0].questionId").exists())
+                .andExpect(jsonPath("$.followup[0].questionText").exists())
+                .andExpect(jsonPath("$.followup[0].answerText").exists())
+                .andExpect(jsonPath("$.interviewRecommendations").isArray())
+                .andExpect(jsonPath("$.interviewRecommendations.length()").value(3))
+                .andReturn();
+
+        // 응답 역직렬화 후 추가 검증
+        String responseBody = result.getResponse().getContentAsString();
+        ReviewDetailResponse response = objectMapper.readValue(responseBody, ReviewDetailResponse.class);
+
+        assertThat(response.applicationId()).isEqualTo(applicationId);
+        assertThat(response.status()).isEqualTo(ApplicationStatus.REVIEW_READY);
+        assertThat(response.coverLetterText()).isNotBlank();
+        assertThat(response.selectedExperience()).isNotNull();
+        assertThat(response.selectedExperience().title()).isEqualTo("브랜드 론칭 및 매출 신장");
+
+        // STAR 4종류 모두 포함 검증
+        var types = response.followup().stream().map(f -> f.type()).toList();
+        assertThat(types).containsExactlyInAnyOrder("S", "T", "A", "R");
+
+        // 각 followup 항목에 answerText가 존재하는지 검증
+        response.followup().forEach(item -> assertThat(item.answerText()).isNotBlank());
+
+        // 면접 추천 질문 3개 검증
+        assertThat(response.interviewRecommendations()).hasSize(3);
+    }
+
+    @Test
+    @DisplayName("존재하지 않는 지원서 ID로 결과 조회 시 404 에러를 반환한다")
+    void getReviewDetail_withNonExistentApplication_shouldReturn404() throws Exception {
+        mockMvc.perform(get("/api/v1/applications/{applicationId}/review", 99999L))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    @DisplayName("REVIEW_READY 상태가 아닌 지원서에서 결과 조회 시 409 에러를 반환한다")
+    void getReviewDetail_withWrongStatus_shouldReturn409() throws Exception {
+        // Given - 지원서 제출만 완료 (SUBMITTED 상태)
+        SubmitRequest submitRequest = loadExampleRequest();
+        MvcResult submitResult = mockMvc.perform(post("/api/v1/applications")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(submitRequest)))
+                .andExpect(status().isCreated())
+                .andReturn();
+        SubmitResponse submitResponse = objectMapper.readValue(
+                submitResult.getResponse().getContentAsString(), SubmitResponse.class);
+        Long applicationId = submitResponse.applicationId();
+
+        // When & Then - SUBMITTED 상태에서 결과 조회 시도 (409 에러 예상)
+        mockMvc.perform(get("/api/v1/applications/{applicationId}/review", applicationId))
+                .andExpect(status().isConflict());
     }
 }
