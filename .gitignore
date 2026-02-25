@@ -46,3 +46,6 @@ logs/
 
 ### Documentation ###
 doc/
+
+### Claude Code ###
+CLAUDE.md
