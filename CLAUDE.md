@@ -51,19 +51,27 @@ Application (status: SUBMITTED → EXPERIENCE_SELECTED → QUESTIONS_SENT → AN
 - **`service/`** — `ApplicationService` (workflow orchestration), `ChatGptService` (Spring AI ChatClient wrapper, `@Primary`, implements `ExperienceExtractionService`, `FollowupQuestionGenerationService`, and `InterviewRecommendationService`), `ExperienceExtractionService` (interface), `FollowupQuestionGenerationService` (interface), `InterviewRecommendationService` (interface)
 - **`entity/`** — JPA entities: `Application`, `Experience`, `FollowupQuestion`, `FollowupAnswer`
 - **`domain/`** — `ApplicationStatus` enum, `QuestionType` enum (S, T, A, R)
-- **`repository/`** — Spring Data JPA repositories with custom queries
-- **`dto/`** — Request/response DTOs
+- **`repository/`** — Spring Data JPA repositories with custom queries; `ApplicationRepository` includes `findByStatusOrderByIdAsc` and `findByStatusAndIdGreaterThanOrderByIdAsc` for cursor pagination
+- **`dto/`** — Request/response DTOs; `ApplicationListResponse` / `ApplicationListItemDto` for the review queue list
 
 ### Implemented Endpoints
 
 | Method | Path | Description |
 |--------|------|-------------|
+| `GET`  | `/api/v1/applications` | List applications by status with cursor-based pagination (`status`, `limit`, `cursor` query params; default status=REVIEW_READY, limit=50) |
 | `POST` | `/api/v1/applications` | Submit cover letter; triggers GPT experience extraction |
 | `POST` | `/api/v1/applications/{id}/select-experience` | Select the top-ranked experience |
 | `POST` | `/api/v1/applications/{id}/generate-followup-questions` | Generate 4 STAR follow-up questions for the selected experience |
 | `POST` | `/api/v1/applications/{id}/followup-answers` | Submit STAR answers; auto-generates interview recommendations → REVIEW_READY |
 
-Remaining endpoints (review, interview questions re-generation) are planned but not yet implemented.
+Remaining endpoints (interview questions re-generation) are planned but not yet implemented.
+
+#### 커서 기반 페이지네이션 (`GET /api/v1/applications`)
+- `cursor`: Base64 인코딩된 마지막 `id` (없으면 첫 페이지)
+- `limit`: 1~100 범위, 초과 시 400 반환
+- `limit+1`개 조회 후 초과분이 있으면 `nextCursor` 반환, 없으면 `null`
+- 응답: `ApplicationListResponse { items: ApplicationListItemDto[], nextCursor: String | null }`
+- `ApplicationListItemDto` 필드: `applicationId`, `applicantId`, `status`, `createdAt`
 
 ### Spring AI Integration
 

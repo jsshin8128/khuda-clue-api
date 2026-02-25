@@ -7,6 +7,8 @@ import com.khuda.khuda_clue_api.domain.ApplicationStatus;
 import com.khuda.khuda_clue_api.dto.request.AnswerItem;
 import com.khuda.khuda_clue_api.dto.request.FollowupAnswersRequest;
 import com.khuda.khuda_clue_api.dto.request.SubmitRequest;
+import com.khuda.khuda_clue_api.dto.response.ApplicationListItemDto;
+import com.khuda.khuda_clue_api.dto.response.ApplicationListResponse;
 import com.khuda.khuda_clue_api.dto.response.FollowupAnswersResponse;
 import com.khuda.khuda_clue_api.dto.response.GenerateFollowupQuestionsResponse;
 import com.khuda.khuda_clue_api.dto.response.QuestionDto;
@@ -22,11 +24,14 @@ import com.khuda.khuda_clue_api.repository.ExperienceRepository;
 import com.khuda.khuda_clue_api.repository.FollowupAnswerRepository;
 import com.khuda.khuda_clue_api.repository.FollowupQuestionRepository;
 import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 import java.util.List;
 
 @Service
@@ -151,6 +156,72 @@ public class ApplicationService {
                 selectedExperience.getId(),
                 questionDtos
         );
+    }
+
+    /**
+     * 지원서 목록 조회 (커서 기반 페이지네이션)
+     * - status 필터링 + id 기반 오름차순 정렬
+     * - cursor: Base64 인코딩된 마지막 id (null이면 첫 페이지)
+     * - limit+1 개 조회 후 초과분이 있으면 nextCursor 반환
+     */
+    public ApplicationListResponse getApplicationList(ApplicationStatus status, int limit, String cursor) {
+        // limit 범위 검증 (1 ~ 100)
+        if (limit < 1 || limit > 100) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "limit must be between 1 and 100");
+        }
+
+        // limit+1 개 조회하여 다음 페이지 존재 여부 판단
+        PageRequest pageRequest = PageRequest.of(0, limit + 1);
+        List<Application> rows;
+
+        if (cursor == null || cursor.isBlank()) {
+            // 첫 페이지: 커서 없이 조회
+            rows = applicationRepository.findByStatusOrderByIdAsc(status, pageRequest);
+        } else {
+            // 이후 페이지: cursor 디코딩 후 id > cursorId 조건으로 조회
+            Long cursorId = decodeCursor(cursor);
+            rows = applicationRepository.findByStatusAndIdGreaterThanOrderByIdAsc(status, cursorId, pageRequest);
+        }
+
+        // 다음 페이지 존재 여부 확인
+        boolean hasNext = rows.size() > limit;
+        List<Application> pageItems = hasNext ? rows.subList(0, limit) : rows;
+
+        // 응답 DTO 변환
+        List<ApplicationListItemDto> items = pageItems.stream()
+                .map(a -> new ApplicationListItemDto(
+                        a.getId(),
+                        a.getApplicantId(),
+                        a.getStatus(),
+                        a.getCreatedAt()
+                ))
+                .toList();
+
+        // 다음 커서 계산: 현재 페이지 마지막 항목의 id를 인코딩
+        String nextCursor = hasNext ? encodeCursor(pageItems.get(pageItems.size() - 1).getId()) : null;
+
+        return new ApplicationListResponse(items, nextCursor);
+    }
+
+    /**
+     * 커서 인코딩: id → Base64 문자열
+     */
+    private String encodeCursor(Long id) {
+        return Base64.getEncoder().encodeToString(id.toString().getBytes(StandardCharsets.UTF_8));
+    }
+
+    /**
+     * 커서 디코딩: Base64 문자열 → id
+     */
+    private Long decodeCursor(String cursor) {
+        try {
+            String decoded = new String(Base64.getDecoder().decode(cursor), StandardCharsets.UTF_8);
+            return Long.parseLong(decoded);
+        } catch (IllegalArgumentException e) {
+            // NumberFormatException은 IllegalArgumentException의 하위 클래스이므로 여기서 함께 처리됨
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Invalid cursor value");
+        }
     }
 
     @Transactional
