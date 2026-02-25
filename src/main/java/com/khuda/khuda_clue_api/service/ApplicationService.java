@@ -10,8 +10,11 @@ import com.khuda.khuda_clue_api.dto.request.SubmitRequest;
 import com.khuda.khuda_clue_api.dto.response.ApplicationListItemDto;
 import com.khuda.khuda_clue_api.dto.response.ApplicationListResponse;
 import com.khuda.khuda_clue_api.dto.response.FollowupAnswersResponse;
+import com.khuda.khuda_clue_api.dto.response.FollowupItemDto;
 import com.khuda.khuda_clue_api.dto.response.GenerateFollowupQuestionsResponse;
 import com.khuda.khuda_clue_api.dto.response.QuestionDto;
+import com.khuda.khuda_clue_api.dto.response.ReviewDetailResponse;
+import com.khuda.khuda_clue_api.dto.response.ReviewSelectedExperienceDto;
 import com.khuda.khuda_clue_api.dto.response.SelectExperienceResponse;
 import com.khuda.khuda_clue_api.dto.response.SelectedExperience;
 import com.khuda.khuda_clue_api.dto.response.SubmitResponse;
@@ -30,9 +33,12 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
@@ -299,5 +305,80 @@ public class ApplicationService {
                 ApplicationStatus.REVIEW_READY,
                 "Answers saved. Review package is ready."
         );
+    }
+
+    /**
+     * 평가자 결과 조회 (한 화면 완성 패키지)
+     * - 상태 가드: REVIEW_READY 상태만 허용
+     * - coverLetterText + selectedExperience + STAR 질문·답변 + 면접 추천 질문 반환
+     */
+    public ReviewDetailResponse getReviewDetail(Long applicationId) {
+        Application application = applicationRepository.findById(applicationId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Application not found"));
+
+        if (application.getStatus() != ApplicationStatus.REVIEW_READY) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "Review detail is only available for REVIEW_READY applications. Current status: "
+                            + application.getStatus());
+        }
+
+        Experience selectedExperience = experienceRepository
+                .findByApplicationIdAndIsSelectedTrue(applicationId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR,
+                        "No selected experience found for applicationId: " + applicationId));
+
+        List<FollowupQuestion> questions = followupQuestionRepository
+                .findByExperienceIdOrderByTypeAsc(selectedExperience.getId());
+
+        List<Long> questionIds = questions.stream().map(FollowupQuestion::getId).toList();
+
+        Map<Long, String> answerByQuestionId = followupAnswerRepository
+                .findByQuestionIdIn(questionIds)
+                .stream()
+                .collect(Collectors.toMap(FollowupAnswer::getQuestionId, FollowupAnswer::getAnswerText));
+
+        List<FollowupItemDto> followupItems = questions.stream()
+                .map(q -> new FollowupItemDto(
+                        q.getType().name(),
+                        q.getId(),
+                        q.getQuestionText(),
+                        answerByQuestionId.get(q.getId())
+                ))
+                .toList();
+
+        List<String> recommendations = deserializeRecommendations(
+                application.getInterviewRecommendationsJson(), applicationId);
+
+        return new ReviewDetailResponse(
+                application.getId(),
+                application.getApplicantId(),
+                application.getStatus(),
+                application.getCoverLetterText(),
+                new ReviewSelectedExperienceDto(
+                        selectedExperience.getId(),
+                        selectedExperience.getTitle(),
+                        selectedExperience.getStartIdx(),
+                        selectedExperience.getEndIdx()
+                ),
+                followupItems,
+                recommendations
+        );
+    }
+
+    /**
+     * interview_recommendations_json 역직렬화
+     */
+    @SuppressWarnings("unchecked")
+    private List<String> deserializeRecommendations(String json, Long applicationId) {
+        if (json == null || json.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR,
+                    "Interview recommendations not found for applicationId: " + applicationId);
+        }
+        try {
+            return objectMapper.readValue(json, List.class);
+        } catch (IOException e) {
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR,
+                    "Failed to deserialize interview recommendations: " + e.getMessage());
+        }
     }
 }
