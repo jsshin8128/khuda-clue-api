@@ -44,8 +44,11 @@ import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.util.List;
 
+import com.khuda.khuda_clue_api.dto.response.ApplicationListResponse;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
@@ -708,5 +711,202 @@ class ApplicationControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isConflict());
+    }
+
+    // =========================================================
+    // PR5: 지원서 목록 조회 (평가자 큐) 테스트
+    // =========================================================
+
+    /**
+     * 전체 플로우(제출→경험선택→질문생성→답변제출)를 수행해 REVIEW_READY 상태의
+     * applicationId를 반환하는 헬퍼 메서드
+     */
+    private long createReviewReadyApplication() throws Exception {
+        AppWithQuestions setup = submitSelectAndGenerateQuestions();
+        long applicationId = setup.applicationId();
+        List<Long> questionIds = setup.questionIds();
+
+        Mockito.when(interviewRecommendationService.generateInterviewRecommendations(
+                        Mockito.eq(applicationId), Mockito.anyString(), Mockito.anyList(), Mockito.anyList()))
+                .thenReturn(List.of("추천 질문 1", "추천 질문 2", "추천 질문 3"));
+
+        var answers = List.of(
+                new AnswerItem(questionIds.get(0), "답변 S"),
+                new AnswerItem(questionIds.get(1), "답변 T"),
+                new AnswerItem(questionIds.get(2), "답변 A"),
+                new AnswerItem(questionIds.get(3), "답변 R")
+        );
+        FollowupAnswersRequest request = new FollowupAnswersRequest(
+                LocalDateTime.now().minusMinutes(10),
+                LocalDateTime.now(),
+                answers
+        );
+
+        mockMvc.perform(post("/api/v1/applications/{applicationId}/followup-answers", applicationId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk());
+
+        return applicationId;
+    }
+
+    @Test
+    @DisplayName("REVIEW_READY 상태 필터 조회 - items 반환 및 status 필드 검증")
+    void getApplicationList_withReviewReadyStatus_shouldReturnItems() throws Exception {
+        // Given - REVIEW_READY 상태 지원서 1개 생성
+        long applicationId = createReviewReadyApplication();
+
+        // When & Then
+        MvcResult result = mockMvc.perform(get("/api/v1/applications")
+                        .param("status", "REVIEW_READY")
+                        .param("limit", "50"))
+                .andExpect(status().isOk())
+                .andExpect(content().contentType(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("$.items").isArray())
+                .andExpect(jsonPath("$.items[0].applicationId").exists())
+                .andExpect(jsonPath("$.items[0].applicantId").exists())
+                .andExpect(jsonPath("$.items[0].status").value("REVIEW_READY"))
+                .andExpect(jsonPath("$.items[0].createdAt").exists())
+                .andReturn();
+
+        String responseBody = result.getResponse().getContentAsString();
+        ApplicationListResponse response = objectMapper.readValue(responseBody, ApplicationListResponse.class);
+
+        // items 중 방금 생성한 applicationId가 포함되어 있는지 확인
+        assertThat(response.items()).isNotEmpty();
+        boolean found = response.items().stream()
+                .anyMatch(item -> item.applicationId().equals(applicationId));
+        assertThat(found).isTrue();
+
+        // 모든 items의 status가 REVIEW_READY인지 확인
+        response.items().forEach(item ->
+                assertThat(item.status()).isEqualTo(ApplicationStatus.REVIEW_READY));
+    }
+
+    @Test
+    @DisplayName("limit 파라미터 동작 검증 - limit=1 이면 nextCursor 반환")
+    void getApplicationList_withLimitOne_shouldReturnNextCursor() throws Exception {
+        // Given - REVIEW_READY 상태 지원서 2개 생성
+        createReviewReadyApplication();
+        createReviewReadyApplication();
+
+        // When - limit=1로 조회
+        MvcResult result = mockMvc.perform(get("/api/v1/applications")
+                        .param("status", "REVIEW_READY")
+                        .param("limit", "1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items").isArray())
+                .andExpect(jsonPath("$.items.length()").value(1))
+                .andReturn();
+
+        String responseBody = result.getResponse().getContentAsString();
+        ApplicationListResponse response = objectMapper.readValue(responseBody, ApplicationListResponse.class);
+
+        // 2개 이상 존재하므로 nextCursor가 null이 아니어야 함
+        assertThat(response.nextCursor()).isNotNull();
+    }
+
+    @Test
+    @DisplayName("cursor 파라미터로 다음 페이지 조회 - 커서 기반 페이지네이션")
+    void getApplicationList_withCursor_shouldReturnNextPage() throws Exception {
+        // Given - REVIEW_READY 상태 지원서 2개 생성
+        createReviewReadyApplication();
+        createReviewReadyApplication();
+
+        // 첫 페이지: limit=1
+        MvcResult firstPageResult = mockMvc.perform(get("/api/v1/applications")
+                        .param("status", "REVIEW_READY")
+                        .param("limit", "1"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        ApplicationListResponse firstPage = objectMapper.readValue(
+                firstPageResult.getResponse().getContentAsString(), ApplicationListResponse.class);
+
+        assertThat(firstPage.items()).hasSize(1);
+        assertThat(firstPage.nextCursor()).isNotNull();
+
+        long firstId = firstPage.items().get(0).applicationId();
+
+        // 두 번째 페이지: cursor 사용
+        MvcResult secondPageResult = mockMvc.perform(get("/api/v1/applications")
+                        .param("status", "REVIEW_READY")
+                        .param("limit", "1")
+                        .param("cursor", firstPage.nextCursor()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items").isArray())
+                .andExpect(jsonPath("$.items.length()").value(1))
+                .andReturn();
+
+        ApplicationListResponse secondPage = objectMapper.readValue(
+                secondPageResult.getResponse().getContentAsString(), ApplicationListResponse.class);
+
+        // 두 번째 페이지의 applicationId는 첫 번째와 달라야 함 (id > firstId)
+        long secondId = secondPage.items().get(0).applicationId();
+        assertThat(secondId).isGreaterThan(firstId);
+    }
+
+    @Test
+    @DisplayName("SUBMITTED 상태 필터 조회 - REVIEW_READY 항목이 포함되지 않는다")
+    void getApplicationList_withSubmittedStatus_shouldNotContainReviewReady() throws Exception {
+        // Given - REVIEW_READY 1개, SUBMITTED 1개 생성
+        createReviewReadyApplication();
+
+        SubmitRequest submitRequest = loadExampleRequest();
+        mockMvc.perform(post("/api/v1/applications")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(submitRequest)))
+                .andExpect(status().isCreated());
+
+        // When - SUBMITTED 상태 필터로 조회
+        MvcResult result = mockMvc.perform(get("/api/v1/applications")
+                        .param("status", "SUBMITTED")
+                        .param("limit", "50"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        ApplicationListResponse response = objectMapper.readValue(
+                result.getResponse().getContentAsString(), ApplicationListResponse.class);
+
+        // 모든 items의 status가 SUBMITTED인지 확인
+        assertThat(response.items()).isNotEmpty();
+        response.items().forEach(item ->
+                assertThat(item.status()).isEqualTo(ApplicationStatus.SUBMITTED));
+    }
+
+    @Test
+    @DisplayName("마지막 페이지에서 nextCursor가 null이다")
+    void getApplicationList_lastPage_shouldReturnNullNextCursor() throws Exception {
+        // Given - REVIEW_READY 1개 생성
+        createReviewReadyApplication();
+
+        // When - 충분히 큰 limit으로 조회
+        MvcResult result = mockMvc.perform(get("/api/v1/applications")
+                        .param("status", "REVIEW_READY")
+                        .param("limit", "100"))
+                .andExpect(status().isOk())
+                .andReturn();
+
+        ApplicationListResponse response = objectMapper.readValue(
+                result.getResponse().getContentAsString(), ApplicationListResponse.class);
+
+        // 모든 데이터를 가져왔으므로 nextCursor는 null이어야 함
+        assertThat(response.nextCursor()).isNull();
+    }
+
+    @Test
+    @DisplayName("limit이 범위를 벗어나면 400 에러를 반환한다")
+    void getApplicationList_withInvalidLimit_shouldReturn400() throws Exception {
+        // limit=0 (범위 초과)
+        mockMvc.perform(get("/api/v1/applications")
+                        .param("status", "REVIEW_READY")
+                        .param("limit", "0"))
+                .andExpect(status().isBadRequest());
+
+        // limit=101 (범위 초과)
+        mockMvc.perform(get("/api/v1/applications")
+                        .param("status", "REVIEW_READY")
+                        .param("limit", "101"))
+                .andExpect(status().isBadRequest());
     }
 }

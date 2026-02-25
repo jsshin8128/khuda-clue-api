@@ -1,7 +1,9 @@
 package com.khuda.khuda_clue_api.controller;
 
+import com.khuda.khuda_clue_api.domain.ApplicationStatus;
 import com.khuda.khuda_clue_api.dto.request.FollowupAnswersRequest;
 import com.khuda.khuda_clue_api.dto.request.SubmitRequest;
+import com.khuda.khuda_clue_api.dto.response.ApplicationListResponse;
 import com.khuda.khuda_clue_api.dto.response.FollowupAnswersResponse;
 import com.khuda.khuda_clue_api.dto.response.GenerateFollowupQuestionsResponse;
 import com.khuda.khuda_clue_api.dto.response.SelectExperienceResponse;
@@ -19,6 +21,20 @@ import org.springframework.web.bind.annotation.*;
 public class ApplicationController {
 
     private final ApplicationService applicationService;
+
+    /**
+     * 지원서 목록 조회 (평가자 큐)
+     * GET /api/v1/applications?status=REVIEW_READY&limit=50&cursor=...
+     */
+    @GetMapping
+    public ResponseEntity<ApplicationListResponse> getApplicationList(
+            @RequestParam(defaultValue = "REVIEW_READY") ApplicationStatus status,
+            @RequestParam(defaultValue = "50") int limit,
+            @RequestParam(required = false) String cursor
+    ) {
+        ApplicationListResponse response = applicationService.getApplicationList(status, limit, cursor);
+        return ResponseEntity.ok(response);
+    }
 
     @PostMapping
     public ResponseEntity<SubmitResponse> submitApplication(@Valid @RequestBody SubmitRequest request) {
