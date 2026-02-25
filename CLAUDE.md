@@ -40,16 +40,17 @@ This is a Spring Boot 4.0.2 / Java 21 REST API that uses GPT-4o-mini to help rec
 ```
 Application (status: SUBMITTED → EXPERIENCE_SELECTED → QUESTIONS_SENT → ANSWERED → REVIEW_READY)
   └── Experience[] (title, startIdx, endIdx in cover letter text, rankScore, isSelected)
+        └── FollowupQuestion[] (type: S/T/A/R, questionText)
 ```
 
-`Application` holds the cover letter text. `Experience` objects represent extracted spans within that text (via character indices), ranked by the AI. Only one `Experience` per `Application` can be `isSelected = true` (enforced by a DB unique index).
+`Application` holds the cover letter text. `Experience` objects represent extracted spans within that text (via character indices), ranked by the AI. Only one `Experience` per `Application` can be `isSelected = true` (enforced by a DB unique index). `FollowupQuestion` stores STAR-framework questions tied to the selected experience; each experience can have at most one question per type (enforced by a DB unique index).
 
 ### Layer Structure
 
 - **`controller/`** — `ApplicationController`: REST endpoints, input validation via Jakarta Validation
-- **`service/`** — `ApplicationService` (workflow orchestration), `ChatGptService` (Spring AI ChatClient wrapper, `@Primary`), `ExperienceExtractionService` (interface)
-- **`entity/`** — JPA entities: `Application`, `Experience`
-- **`domain/`** — `ApplicationStatus` enum
+- **`service/`** — `ApplicationService` (workflow orchestration), `ChatGptService` (Spring AI ChatClient wrapper, `@Primary`, implements `ExperienceExtractionService`, `FollowupQuestionGenerationService`, and `InterviewRecommendationService`), `ExperienceExtractionService` (interface), `FollowupQuestionGenerationService` (interface), `InterviewRecommendationService` (interface)
+- **`entity/`** — JPA entities: `Application`, `Experience`, `FollowupQuestion`, `FollowupAnswer`
+- **`domain/`** — `ApplicationStatus` enum, `QuestionType` enum (S, T, A, R)
 - **`repository/`** — Spring Data JPA repositories with custom queries
 - **`dto/`** — Request/response DTOs
 
@@ -59,26 +60,31 @@ Application (status: SUBMITTED → EXPERIENCE_SELECTED → QUESTIONS_SENT → AN
 |--------|------|-------------|
 | `POST` | `/api/v1/applications` | Submit cover letter; triggers GPT experience extraction |
 | `POST` | `/api/v1/applications/{id}/select-experience` | Select the top-ranked experience |
+| `POST` | `/api/v1/applications/{id}/generate-followup-questions` | Generate 4 STAR follow-up questions for the selected experience |
+| `POST` | `/api/v1/applications/{id}/followup-answers` | Submit STAR answers; auto-generates interview recommendations → REVIEW_READY |
 
-Remaining endpoints (follow-up questions, answers, review, interview questions) are planned but not yet implemented.
+Remaining endpoints (review, interview questions re-generation) are planned but not yet implemented.
 
 ### Spring AI Integration
 
 `ChatGptService` uses Spring AI's `ChatClient` (via `spring-ai-starter-model-openai`, BOM `2.0.0-M2`). The API key is configured via `spring.ai.openai.api-key` in `application.yaml`, bound to the env var `CHATGPT_API_KEY`. Model options (model name, temperature, max-tokens) are set in `application.yaml` under `spring.ai.openai.chat.options`.
 
-Prompt templates are inlined in `ChatGptService` with a 1-shot example cover letter loaded from `src/main/resources/prompt/experience-extraction-example-coverletter.txt`. The service extracts experiences (each with `title`, `startIdx`, `endIdx`, `rankScore`) and returns only the top-ranked one.
+Prompt templates are inlined in `ChatGptService`:
+- **Experience extraction**: 1-shot prompt with an example cover letter from `src/main/resources/prompt/experience-extraction-example-coverletter.txt`. Returns experiences (each with `title`, `startIdx`, `endIdx`, `rankScore`); only the top-ranked is saved as `isSelected = true`.
+- **STAR follow-up question generation**: Generates exactly 4 questions (one per STAR type: S, T, A, R) for the selected experience text (extracted via `startIdx`/`endIdx`).
+- **Interview recommendation generation**: After STAR answers are submitted, generates 3 interview questions targeting unclear/unverified points; result is stored as JSON in `application.interview_recommendations_json`.
 
 ### Database
 
 - MySQL 8.4.7 via Docker Compose (`compose.yaml`); auto-starts with `bootRun`
 - Flyway migrations in `src/main/resources/db/migration/`
-- V1: `application` table; V2: `experience` table with FK to `application`
+- V1: `application` table; V2: `experience` table with FK to `application`; V3: `followup_question` table with FK to `experience`; V4: `followup_answer` table with FK to `followup_question`
 - **Never modify merged migration files** — always add a new `V{n}__description.sql`
 - `ddl-auto: validate` — schema must match entities exactly
 
 ### Testing Approach
 
-Integration tests in `src/integrationTest/java/` use Testcontainers (MySQL 8.4.7). `ExperienceExtractionService` is mocked with `@MockitoBean` to avoid real API calls. The test fixture `example-request.json` lives in `src/integrationTest/resources/`. A placeholder API key (`spring.ai.openai.api-key`) must be set via `DynamicPropertySource` because Spring AI's auto-configuration validates its presence even when mocked.
+Integration tests in `src/integrationTest/java/` use Testcontainers (MySQL 8.4.7). `ExperienceExtractionService`, `FollowupQuestionGenerationService`, and `InterviewRecommendationService` are all mocked with `@MockitoBean` to avoid real API calls. The test fixture `example-request.json` lives in `src/integrationTest/resources/`. A placeholder API key (`spring.ai.openai.api-key`) must be set via `DynamicPropertySource` because Spring AI's auto-configuration validates its presence even when mocked.
 
 Unit tests are in `src/test/java/`.
 

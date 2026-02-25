@@ -4,6 +4,7 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.khuda.khuda_clue_api.domain.QuestionType;
 import com.khuda.khuda_clue_api.entity.Experience;
+import com.khuda.khuda_clue_api.entity.FollowupAnswer;
 import com.khuda.khuda_clue_api.entity.FollowupQuestion;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
@@ -18,6 +19,8 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
  * Spring AI ChatClient를 사용하여 자소서에서 경험을 추출하고 STAR 질문을 생성하는 서비스
@@ -25,7 +28,7 @@ import java.util.List;
 @Slf4j
 @Service
 @Primary
-public class ChatGptService implements ExperienceExtractionService, FollowupQuestionGenerationService {
+public class ChatGptService implements ExperienceExtractionService, FollowupQuestionGenerationService, InterviewRecommendationService {
 
     private static final String EXAMPLE_COVER_LETTER_RESOURCE_PATH = "/prompt/experience-extraction-example-coverletter.txt";
 
@@ -406,5 +409,128 @@ public class ChatGptService implements ExperienceExtractionService, FollowupQues
     private static class FollowupQuestionJson {
         public String type;
         public String questionText;
+    }
+
+    // =========================================================
+    // InterviewRecommendationService 구현
+    // =========================================================
+
+    @Override
+    public List<String> generateInterviewRecommendations(
+            Long applicationId,
+            String coverLetterText,
+            List<FollowupQuestion> questions,
+            List<FollowupAnswer> answers
+    ) {
+        log.info("Spring AI ChatClient를 사용하여 면접 추천 질문 생성 시작. applicationId: {}", applicationId);
+
+        try {
+            // questionId → answerText 맵 생성
+            Map<Long, String> answerMap = answers.stream()
+                    .collect(Collectors.toMap(FollowupAnswer::getQuestionId, FollowupAnswer::getAnswerText));
+
+            String systemPrompt = buildRecommendationSystemPrompt();
+            String userPrompt = buildRecommendationUserPrompt(coverLetterText, questions, answerMap);
+
+            Prompt prompt = new Prompt(List.of(
+                    new SystemMessage(systemPrompt),
+                    new UserMessage(userPrompt)
+            ));
+
+            String content = chatClient.prompt(prompt)
+                    .call()
+                    .content();
+
+            if (content == null || content.isBlank()) {
+                log.warn("Spring AI로부터 빈 응답 수신 (면접 추천 질문 생성). applicationId: {}", applicationId);
+                return new ArrayList<>();
+            }
+
+            log.info("Spring AI 면접 추천 질문 응답 수신 완료. applicationId: {}", applicationId);
+            log.debug("Spring AI 면접 추천 질문 응답: {}", content);
+
+            return parseRecommendations(content);
+
+        } catch (Exception e) {
+            log.error("Spring AI 면접 추천 질문 생성 중 오류 발생. Exception type: {}, message: {}",
+                    e.getClass().getSimpleName(), e.getMessage(), e);
+            return new ArrayList<>();
+        }
+    }
+
+    private String buildRecommendationSystemPrompt() {
+        return """
+                너는 JSON만 출력하는 채용 면접 질문 추천 생성기다.
+                자소서 원문과 STAR 후속 질문/답변 쌍을 바탕으로, 평가자가 면접에서 추가로 확인해야 할 질문 3개를 생성해라.
+                출력은 반드시 JSON 문자열 배열 1개만. 코드펜스(```), 설명 문장, 마크다운, 주석을 절대 포함하지 마라.
+                """;
+    }
+
+    private String buildRecommendationUserPrompt(
+            String coverLetterText,
+            List<FollowupQuestion> questions,
+            Map<Long, String> answerMap
+    ) {
+        StringBuilder starQnA = new StringBuilder();
+        for (FollowupQuestion q : questions) {
+            String answerText = answerMap.getOrDefault(q.getId(), "(답변 없음)");
+            starQnA.append(String.format("""
+                    [%s]
+                    질문: %s
+                    답변: %s
+                    
+                    """, q.getType().name(), q.getQuestionText(), answerText));
+        }
+
+        return """
+                [과제]
+                아래 [자소서 원문]과 [STAR Q&A]를 검토하고, 현재 정보만으로는 판단하기 어려운 지점을 정확히 겨냥하는 면접 질문 3개를 생성하라.
+                
+                목적: AI가 생성했을 가능성이 있는 답변이나, 실제 경험 여부가 불확실한 부분을 검증한다.
+                규칙:
+                - 각 질문은 1문장으로 짧고 구체적으로 작성한다.
+                - 이미 답변된 내용을 단순 반복하는 질문은 금지한다.
+                - 증거/수치/과정에 대한 추가 검증 방향으로 작성한다.
+                - 아래 [출력 JSON 스키마]는 "형식 참고용"이다. 반드시 실제 내용에 맞는 질문을 생성해라.
+                
+                [자소서 원문]
+                %s
+                
+                [STAR Q&A]
+                %s
+                
+                [출력 JSON 스키마]
+                ["면접 질문 1", "면접 질문 2", "면접 질문 3"]
+                """.formatted(coverLetterText, starQnA.toString().trim());
+    }
+
+    private List<String> parseRecommendations(String content) {
+        try {
+            // JSON 배열 추출 (마크다운 코드 블록 제거)
+            String jsonContent = content.trim();
+            if (jsonContent.startsWith("```json")) {
+                jsonContent = jsonContent.substring(7);
+            }
+            if (jsonContent.startsWith("```")) {
+                jsonContent = jsonContent.substring(3);
+            }
+            if (jsonContent.endsWith("```")) {
+                jsonContent = jsonContent.substring(0, jsonContent.length() - 3);
+            }
+            jsonContent = jsonContent.trim();
+
+            // JSON 문자열 배열 파싱
+            List<String> recommendations = objectMapper.readValue(
+                    jsonContent,
+                    objectMapper.getTypeFactory().constructCollectionType(List.class, String.class)
+            );
+
+            log.info("면접 추천 질문 파싱 완료. 총 {}개", recommendations.size());
+            return recommendations;
+
+        } catch (Exception e) {
+            log.error("Spring AI 면접 추천 질문 응답 파싱 중 오류 발생. 빈 리스트 반환. Content: {}", content, e);
+            return new ArrayList<>();
+        }
     }
 }
