@@ -6,6 +6,7 @@ import com.khuda.khuda_clue_api.dto.request.SubmitRequest;
 import com.khuda.khuda_clue_api.dto.response.ApplicationListResponse;
 import com.khuda.khuda_clue_api.dto.response.FollowupAnswersResponse;
 import com.khuda.khuda_clue_api.dto.response.GenerateFollowupQuestionsResponse;
+import com.khuda.khuda_clue_api.dto.response.RecommendInterviewQuestionsResponse;
 import com.khuda.khuda_clue_api.dto.response.ReviewDetailResponse;
 import com.khuda.khuda_clue_api.dto.response.SelectExperienceResponse;
 import com.khuda.khuda_clue_api.dto.response.SubmitResponse;
@@ -71,6 +72,18 @@ public class ApplicationController {
     @GetMapping("/{applicationId}/review")
     public ResponseEntity<ReviewDetailResponse> getReviewDetail(@PathVariable Long applicationId) {
         ReviewDetailResponse response = applicationService.getReviewDetail(applicationId);
+        return ResponseEntity.ok(response);
+    }
+
+    /**
+     * 면접 추천 질문 재생성
+     * POST /api/v1/applications/{applicationId}/recommend-interview-questions
+     */
+    @PostMapping("/{applicationId}/recommend-interview-questions")
+    public ResponseEntity<RecommendInterviewQuestionsResponse> recommendInterviewQuestions(
+            @PathVariable Long applicationId
+    ) {
+        RecommendInterviewQuestionsResponse response = applicationService.recommendInterviewQuestions(applicationId);
         return ResponseEntity.ok(response);
     }
 }

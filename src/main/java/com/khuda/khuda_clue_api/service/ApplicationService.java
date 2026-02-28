@@ -14,6 +14,7 @@ import com.khuda.khuda_clue_api.dto.response.FollowupItemDto;
 import com.khuda.khuda_clue_api.dto.response.GenerateFollowupQuestionsResponse;
 import com.khuda.khuda_clue_api.dto.response.QuestionDto;
 import com.khuda.khuda_clue_api.dto.response.ReviewDetailResponse;
+import com.khuda.khuda_clue_api.dto.response.RecommendInterviewQuestionsResponse;
 import com.khuda.khuda_clue_api.dto.response.ReviewSelectedExperienceDto;
 import com.khuda.khuda_clue_api.dto.response.SelectExperienceResponse;
 import com.khuda.khuda_clue_api.dto.response.SelectedExperience;
@@ -363,6 +364,59 @@ public class ApplicationService {
                 followupItems,
                 recommendations
         );
+    }
+
+    /**
+     * 면접 추천 질문 재생성
+     * - 상태 가드: REVIEW_READY 상태만 허용
+     * - coverLetter + STAR Q/A 기반으로 추천 질문 3개 재생성 후 DB 업데이트
+     */
+    @Transactional
+    public RecommendInterviewQuestionsResponse recommendInterviewQuestions(Long applicationId) {
+        Application application = applicationRepository.findById(applicationId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Application not found"));
+
+        if (application.getStatus() != ApplicationStatus.REVIEW_READY) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "Interview question re-generation is only allowed for REVIEW_READY applications. Current status: "
+                            + application.getStatus());
+        }
+
+        Experience selectedExperience = experienceRepository
+                .findByApplicationIdAndIsSelectedTrue(applicationId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR,
+                        "No selected experience found for applicationId: " + applicationId));
+
+        List<FollowupQuestion> questions = followupQuestionRepository
+                .findByExperienceIdOrderByTypeAsc(selectedExperience.getId());
+
+        List<Long> questionIds = questions.stream().map(FollowupQuestion::getId).toList();
+        List<FollowupAnswer> answers = followupAnswerRepository.findByQuestionIdIn(questionIds);
+
+        List<String> recommendations = interviewRecommendationService.generateInterviewRecommendations(
+                applicationId,
+                application.getCoverLetterText(),
+                questions,
+                answers
+        );
+
+        if (recommendations.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR,
+                    "Failed to re-generate interview recommendations for applicationId: " + applicationId);
+        }
+
+        String recommendationsJson;
+        try {
+            recommendationsJson = objectMapper.writeValueAsString(recommendations);
+        } catch (JsonProcessingException e) {
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR,
+                    "Failed to serialize interview recommendations: " + e.getMessage());
+        }
+
+        application.updateInterviewRecommendations(recommendationsJson);
+        applicationRepository.save(application);
+
+        return new RecommendInterviewQuestionsResponse(applicationId, recommendations);
     }
 
     /**

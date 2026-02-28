@@ -45,6 +45,7 @@ import java.time.LocalDateTime;
 import java.util.List;
 
 import com.khuda.khuda_clue_api.dto.response.ApplicationListResponse;
+import com.khuda.khuda_clue_api.dto.response.RecommendInterviewQuestionsResponse;
 import com.khuda.khuda_clue_api.dto.response.ReviewDetailResponse;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -989,5 +990,74 @@ class ApplicationControllerTest {
         // When & Then - SUBMITTED 상태에서 결과 조회 시도 (409 에러 예상)
         mockMvc.perform(get("/api/v1/applications/{applicationId}/review", applicationId))
                 .andExpect(status().isConflict());
+    }
+
+    // =========================================================
+    // PR7: 면접 추천 질문 재생성 테스트
+    // =========================================================
+
+    @Test
+    @DisplayName("면접 추천 질문 재생성 API가 정상적으로 작동한다 - 새 추천 질문 3개 반환 및 DB 업데이트 검증")
+    void recommendInterviewQuestions_shouldReturn200WithNewRecommendations() throws Exception {
+        // Given - 전체 플로우 완료 (REVIEW_READY 상태)
+        long applicationId = createReviewReadyApplication();
+
+        // 재생성 시 다른 추천 질문을 반환하도록 mock 설정
+        List<String> newRecommendations = List.of("새 추천 질문 A", "새 추천 질문 B", "새 추천 질문 C");
+        Mockito.when(interviewRecommendationService.generateInterviewRecommendations(
+                        Mockito.eq(applicationId), Mockito.anyString(), Mockito.anyList(), Mockito.anyList()))
+                .thenReturn(newRecommendations);
+
+        // When & Then - 재생성 요청
+        MvcResult result = mockMvc.perform(post("/api/v1/applications/{applicationId}/recommend-interview-questions", applicationId))
+                .andExpect(status().isOk())
+                .andExpect(content().contentType(MediaType.APPLICATION_JSON))
+                .andExpect(jsonPath("$.applicationId").value(applicationId))
+                .andExpect(jsonPath("$.interviewRecommendations").isArray())
+                .andExpect(jsonPath("$.interviewRecommendations.length()").value(3))
+                .andReturn();
+
+        // 응답 역직렬화 후 추가 검증
+        String responseBody = result.getResponse().getContentAsString();
+        RecommendInterviewQuestionsResponse response = objectMapper.readValue(
+                responseBody, RecommendInterviewQuestionsResponse.class);
+
+        assertThat(response.applicationId()).isEqualTo(applicationId);
+        assertThat(response.interviewRecommendations()).containsExactlyElementsOf(newRecommendations);
+
+        // DB에 새 추천 질문이 저장되었는지 검증 (review 조회를 통해 간접 확인)
+        MvcResult reviewResult = mockMvc.perform(get("/api/v1/applications/{applicationId}/review", applicationId))
+                .andExpect(status().isOk())
+                .andReturn();
+        ReviewDetailResponse reviewResponse = objectMapper.readValue(
+                reviewResult.getResponse().getContentAsString(), ReviewDetailResponse.class);
+
+        assertThat(reviewResponse.interviewRecommendations()).containsExactlyElementsOf(newRecommendations);
+    }
+
+    @Test
+    @DisplayName("REVIEW_READY 상태가 아닌 지원서에서 추천 질문 재생성 시 409 에러를 반환한다")
+    void recommendInterviewQuestions_withWrongStatus_shouldReturn409() throws Exception {
+        // Given - 지원서 제출만 완료 (SUBMITTED 상태)
+        SubmitRequest submitRequest = loadExampleRequest();
+        MvcResult submitResult = mockMvc.perform(post("/api/v1/applications")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(submitRequest)))
+                .andExpect(status().isCreated())
+                .andReturn();
+        SubmitResponse submitResponse = objectMapper.readValue(
+                submitResult.getResponse().getContentAsString(), SubmitResponse.class);
+        Long applicationId = submitResponse.applicationId();
+
+        // When & Then - SUBMITTED 상태에서 재생성 시도 (409 에러 예상)
+        mockMvc.perform(post("/api/v1/applications/{applicationId}/recommend-interview-questions", applicationId))
+                .andExpect(status().isConflict());
+    }
+
+    @Test
+    @DisplayName("존재하지 않는 지원서 ID로 추천 질문 재생성 시 404 에러를 반환한다")
+    void recommendInterviewQuestions_withNonExistentApplication_shouldReturn404() throws Exception {
+        mockMvc.perform(post("/api/v1/applications/{applicationId}/recommend-interview-questions", 99999L))
+                .andExpect(status().isNotFound());
     }
 }
