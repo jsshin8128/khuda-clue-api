@@ -40,6 +40,7 @@ cp .env.example .env
 ```
 
 ```bash
+# 헬스 체크
 curl http://localhost:8080/actuator/health
 ```
 
@@ -109,7 +110,7 @@ src/main/resources/
 src/integrationTest/  # Testcontainers 통합 테스트
 ```
 
----
+### 브랜치 전략
 
 ## Development
 
