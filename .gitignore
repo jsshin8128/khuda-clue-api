@@ -46,6 +46,7 @@ logs/
 
 ### Documentation ###
 doc/
+!doc/docs/API_SPEC.md
 
 ### Claude Code ###
 CLAUDE.md
