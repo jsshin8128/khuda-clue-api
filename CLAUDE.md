@@ -52,7 +52,7 @@ Application (status: SUBMITTED → EXPERIENCE_SELECTED → QUESTIONS_SENT → AN
 - **`entity/`** — JPA entities: `Application`, `Experience`, `FollowupQuestion`, `FollowupAnswer`
 - **`domain/`** — `ApplicationStatus` enum, `QuestionType` enum (S, T, A, R)
 - **`repository/`** — Spring Data JPA repositories with custom queries; `ApplicationRepository` includes `findByStatusOrderByIdAsc` and `findByStatusAndIdGreaterThanOrderByIdAsc` for cursor pagination
-- **`dto/`** — Request/response DTOs; `ApplicationListResponse` / `ApplicationListItemDto` for the review queue list
+- **`dto/`** — Request/response DTOs; `ApplicationListResponse` / `ApplicationListItemDto` for the review queue list; `ReviewDetailResponse` / `ReviewSelectedExperienceDto` / `FollowupItemDto` for the review detail endpoint; `RecommendInterviewQuestionsResponse` for the re-generation endpoint
 
 ### Implemented Endpoints
 
@@ -63,8 +63,20 @@ Application (status: SUBMITTED → EXPERIENCE_SELECTED → QUESTIONS_SENT → AN
 | `POST` | `/api/v1/applications/{id}/select-experience` | Select the top-ranked experience |
 | `POST` | `/api/v1/applications/{id}/generate-followup-questions` | Generate 4 STAR follow-up questions for the selected experience |
 | `POST` | `/api/v1/applications/{id}/followup-answers` | Submit STAR answers; auto-generates interview recommendations → REVIEW_READY |
+| `GET`  | `/api/v1/applications/{id}/review` | Retrieve full evaluator package (status guard: REVIEW_READY only); returns coverLetterText, selectedExperience, STAR Q&A, interviewRecommendations |
+| `POST` | `/api/v1/applications/{id}/recommend-interview-questions` | Re-generate 3 interview recommendations (status guard: REVIEW_READY only); updates `interview_recommendations_json` in DB |
 
-Remaining endpoints (interview questions re-generation) are planned but not yet implemented.
+#### 추천 질문 재생성 (`POST /api/v1/applications/{id}/recommend-interview-questions`)
+- 상태 가드: `REVIEW_READY` 상태인 지원서만 허용, 아니면 409 반환
+- coverLetter + STAR Q/A 기반으로 `InterviewRecommendationService.generateInterviewRecommendations()` 재호출
+- `application.interview_recommendations_json` 업데이트 후 저장
+- 응답: `RecommendInterviewQuestionsResponse { applicationId, interviewRecommendations: List<String>(3개) }`
+
+#### 평가자 결과 조회 (`GET /api/v1/applications/{id}/review`)
+- 상태 가드: `REVIEW_READY` 상태인 지원서만 조회 가능, 아니면 409 반환
+- `selectedExperience` 필드: `experienceId`, `title`, `startIdx`, `endIdx` (rankScore 제외)
+- `followup` 배열: STAR 4개 항목, 각 항목에 `type`, `questionId`, `questionText`, `answerText` 포함
+- `interviewRecommendations`: `interview_recommendations_json` 역직렬화 → `List<String>` (3개)
 
 #### 커서 기반 페이지네이션 (`GET /api/v1/applications`)
 - `cursor`: Base64 인코딩된 마지막 `id` (없으면 첫 페이지)
